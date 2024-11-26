@@ -29,7 +29,7 @@ content-type = "text/markdown"
 [[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
 path = "README.md"
 
-[tool.hatch.build]
+[tool.hatch.build.targets.wheel]
 packages = ["src/scaffold"]
 
 [dependency-groups]
