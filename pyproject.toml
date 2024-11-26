@@ -1,7 +1,6 @@
 [project]
-name = "scaffold"
-version = "0.1.0"
-description = "Add your description here"
+name = "scaffold-framework"
+description = "A web framework that make it easy to build apps according to SOLID & DDD principles and with layered/onion architecture."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,7 +14,54 @@ dependencies = [
     "wsproto>=1.2.0",
     "wtforms>=3.1.2",
 ]
+dynamic = ["version"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build]
+packages = ["src/scaffold"]
+
+[dependency-groups]
+dev = ["mypy>=1.13.0", "pytest-asyncio>=0.24.0", "pytest>=8.3.3", "ruff>=0.8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
+
+[tool.mypy]
+disable_error_code = "import-untyped"
+enable_error_code = "explicit-override"
+disallow_untyped_defs = true
+# disallow_any_generics = true
+warn_unreachable = true
+
+[tool.black]
+line-length = 120
+unstable = true
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = [
+    "ANN",
+    "ASYNC",
+    "S",
+    "BLE",
+    "B",
+    "A",
+    "COM",
+    "C4",
+    "T10",
+    "EM",
+    "RET",
+    "SLF",
+    "I",
+    "UP",
+]
+extend-ignore = ["A002", "ANN101", "ANN102", "B010", "S101"]

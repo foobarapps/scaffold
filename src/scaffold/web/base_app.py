@@ -8,7 +8,7 @@ from typing import Any, Concatenate, Protocol, cast
 from flask.sansio.app import App
 from flask.templating import Environment
 from quart import Blueprint, Quart, g, request
-from quart.typing import BeforeServingCallable
+from quart.typing import BeforeServingCallable, TestClientProtocol
 
 from .base_controller import BaseController
 
@@ -64,14 +64,12 @@ class BaseWebApp:
     def jinja_env(self) -> Environment:
         return self.__app.jinja_env
 
-    def __create_controller_instance(self) -> None:
-        if request.endpoint is not None:
-            blueprint_full_name = request.endpoint.rsplit(".", maxsplit=1)[0]
-            if blueprint_full_name in self.__endpoint_to_controller_class:
-                controller_class = self.__endpoint_to_controller_class[
-                    blueprint_full_name
-                ]
-                g.controller = self.__controller_factories[controller_class]()
+    def test_client(
+        self,
+        *args: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401
+    ) -> TestClientProtocol:
+        return self.__app.test_client(*args, **kwargs)
 
     def before_serving(self, before_serving_callable: BeforeServingCallable) -> None:
         self.__app.before_serving(before_serving_callable)
@@ -116,6 +114,13 @@ class BaseWebApp:
             for full_name in blueprint_to_full_names[blueprint]:
                 self.__endpoint_to_controller_class[full_name] = controller_class
 
+    def __create_controller_instance(self) -> None:
+        if request.endpoint is not None:
+            blueprint_full_name = request.endpoint.rsplit(".", maxsplit=1)[0]
+            if blueprint_full_name in self.__endpoint_to_controller_class:
+                controller_class = self.__endpoint_to_controller_class[blueprint_full_name]
+                g.controller = self.__controller_factories[controller_class]()
+
     def __create_blueprint(
         self,
         controller_class: type[BaseController],
@@ -138,10 +143,10 @@ class BaseWebApp:
         S, **P,
         R,
     ](
-        func: (
-            Callable[Concatenate[S, P], R] | Callable[Concatenate[S, P], Awaitable[R]]
-        ),
-    ) -> (Callable[P, R] | Callable[P, Awaitable[R]]):
+        func: Callable[Concatenate[S, P], R] | Callable[Concatenate[S, P], Awaitable[R]],
+    ) -> (
+        Callable[P, R] | Callable[P, Awaitable[R]]
+    ):
         if inspect.iscoroutinefunction(func):
 
             @wraps(func)

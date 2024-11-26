@@ -1,0 +1,11 @@
+{
+    // "python.defaultInterpreterPath": "/venv/bin/python",
+    "editor.formatOnSave": true,
+    // "python.testing.pytestEnabled": true,
+    "mypy-type-checker.importStrategy": "fromEnvironment",
+    "mypy-type-checker.reportingScope": "workspace",
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true
+    }
+}
