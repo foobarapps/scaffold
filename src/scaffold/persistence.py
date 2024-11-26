@@ -106,8 +106,4 @@ class GenericSqlUnitOfWork:
 
     @property
     def _repositories(self) -> Sequence[GenericSqlRepository]:
-        return [
-            value
-            for value in self.__dict__.values()
-            if isinstance(value, GenericSqlRepository)
-        ]
+        return [value for value in self.__dict__.values() if isinstance(value, GenericSqlRepository)]

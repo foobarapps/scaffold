@@ -83,9 +83,7 @@ class Assets:
 
     def get_assets_by_pattern(self, pattern: str) -> list:
         """Retrieve asset URLs based on a pathlib glob pattern."""
-        return [
-            self._url_for(file) for file in self.file_map if Path(file).match(pattern)
-        ]
+        return [self._url_for(file) for file in self.file_map if Path(file).match(pattern)]
 
     def __getitem__(self, path: str) -> str:
         """Retrieve a single asset URL by the relative path."""

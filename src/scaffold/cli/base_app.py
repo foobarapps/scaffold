@@ -15,7 +15,8 @@ class BaseCLIApp:
             attr = getattr(self, attr_name)
             if isinstance(attr, Command):
                 subparser = self.subparsers.add_parser(
-                    attr.command_name, help=attr.command_help
+                    attr.command_name,
+                    help=attr.command_help,
                 )
                 for args, kwargs in attr.arguments:
                     subparser.add_argument(*args, **kwargs)
