@@ -17,11 +17,11 @@ dependencies = [
 dynamic = ["version"]
 
 [build-system]
-requires = ["hatchling", "versioningit", "hatch-fancy-pypi-readme"]
+requires = ["hatchling", "hatch-vcs", "hatch-fancy-pypi-readme"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-source = "versioningit"
+source = "vcs"
 
 [tool.hatch.metadata.hooks.fancy-pypi-readme]
 content-type = "text/markdown"
