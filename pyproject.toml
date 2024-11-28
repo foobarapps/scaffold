@@ -1,6 +1,6 @@
 [project]
 name = "scaffold-framework"
-description = "A web framework that make it easy to build apps according to SOLID & DDD principles and with layered/onion architecture."
+description = "A web framework that makes it easy to build apps according to SOLID & DDD principles and with layered/onion architecture."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
