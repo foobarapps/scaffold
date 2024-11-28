@@ -71,3 +71,6 @@ extend-select = [
     "UP",
 ]
 extend-ignore = ["A002", "ANN101", "ANN102", "B010", "S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["scaffold", "tests"]
