@@ -86,3 +86,31 @@ class PostgresPubSubService:
                     # Handle invalid JSON payloads
                     # TODO log this?
                     continue
+
+
+class AsyncioPubSubService:
+    def __init__(self) -> None:
+        self.channels: dict[str, set[asyncio.Queue]] = {}
+
+    async def publish(self, channel_name: str, payload: str) -> None:
+        if channel_name not in self.channels:
+            return
+
+        for queue in self.channels[channel_name]:
+            await queue.put(payload)
+
+    async def subscribe(self, channel_name: str) -> AsyncGenerator[str, None]:
+        if channel_name not in self.channels:
+            self.channels[channel_name] = set()
+
+        queue: asyncio.Queue = asyncio.Queue()
+        self.channels[channel_name].add(queue)
+
+        try:
+            while True:
+                yield await queue.get()
+
+        finally:
+            self.channels[channel_name].remove(queue)
+            if not self.channels[channel_name]:
+                del self.channels[channel_name]
