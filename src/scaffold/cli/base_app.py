@@ -12,15 +12,15 @@ class BaseCLIApp:
 
     def _register_commands(self) -> None:
         for attr_name in dir(self):
-            attr = getattr(self, attr_name)
-            if isinstance(attr, Command):
+            command = getattr(self, attr_name)
+            if isinstance(command, Command):
                 subparser = self.subparsers.add_parser(
-                    attr.command_name,
-                    help=attr.command_help,
+                    command.name,
+                    help=command.help,
                 )
-                for args, kwargs in attr.arguments:
+                for args, kwargs in command.arguments:
                     subparser.add_argument(*args, **kwargs)
-                subparser.set_defaults(func=attr)
+                subparser.set_defaults(func=command)
 
     def run(self) -> None:
         args = self.parser.parse_args()
