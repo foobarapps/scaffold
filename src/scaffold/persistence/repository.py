@@ -1,6 +1,5 @@
 import abc
-from collections.abc import Sequence
-from types import TracebackType, get_original_bases
+from types import get_original_bases
 from typing import Protocol, final, get_args, override
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,33 +76,3 @@ class GenericSqlRepository[E: Entity, ID: EntityId, DTO](abc.ABC):
         for entity in self._identity_map.values():
             dto = self._map_entity_to_dto(entity)
             await self._session.merge(dto)
-
-
-class GenericSqlUnitOfWork:
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-
-    async def __aenter__(self) -> None:
-        return
-
-    async def __aexit__(
-        self,
-        exc_type: type,
-        exc: BaseException,
-        tb: TracebackType,
-    ) -> None:
-        await self.rollback()
-        await self._session.close()
-
-    async def commit(self) -> None:
-        for repo in self._repositories:
-            await repo.sync_state()
-
-        await self._session.commit()
-
-    async def rollback(self) -> None:
-        await self._session.rollback()
-
-    @property
-    def _repositories(self) -> Sequence[GenericSqlRepository]:
-        return [value for value in self.__dict__.values() if isinstance(value, GenericSqlRepository)]
