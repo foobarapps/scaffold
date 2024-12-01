@@ -7,7 +7,7 @@ from typing import Any, Concatenate, Protocol, cast
 
 from flask.sansio.app import App
 from flask.templating import Environment
-from quart import Blueprint, Quart, g, request
+from quart import Blueprint, Quart, ResponseReturnValue, g, request
 from quart.typing import BeforeServingCallable, TestClientProtocol
 
 from .base_controller import BaseController
@@ -47,6 +47,10 @@ class BaseWebApp:
         self.__app.before_request(self.__create_controller_instance)
 
         self.__register_app_callbacks()
+
+        @self.__app.route("/health")
+        def health() -> ResponseReturnValue:
+            return "", 200
 
         self.init()
 

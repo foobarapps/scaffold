@@ -25,3 +25,12 @@ async def test_app() -> None:
     assert response.status_code == 200
     data = await response.data
     assert data == b"Hello, World!"
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint() -> None:
+    app = BaseWebApp("__main__")
+
+    client = app.test_client()
+    response = await client.get("/health")
+    assert response.status_code == 200
