@@ -8,6 +8,7 @@ from typing import Any, Concatenate, Protocol, cast
 from flask.sansio.app import App
 from flask.templating import Environment
 from quart import Blueprint, Quart, ResponseReturnValue, g, request
+from quart.ctx import AppContext
 from quart.typing import BeforeServingCallable, TestClientProtocol
 
 from .base_controller import BaseController
@@ -67,6 +68,9 @@ class BaseWebApp:
     @property
     def jinja_env(self) -> Environment:
         return self.__app.jinja_env
+
+    def app_context(self) -> AppContext:
+        return self.__app.app_context()
 
     def test_client(
         self,

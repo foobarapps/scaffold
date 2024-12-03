@@ -4,6 +4,7 @@ description = "A web framework that makes it easy to build apps according to SOL
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aiosmtplib>=3.0.2",
     "alembic>=1.13.3",
     "h11>=0.14.0",
     "psycopg[binary,pool]>=3.2.3",
