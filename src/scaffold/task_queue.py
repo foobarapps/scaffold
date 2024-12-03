@@ -45,8 +45,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
         await self._connection_pool.open()
         async with self._connection_pool.connection() as conn:
             # TODO add queue name
-            stmt = sql.SQL(
-                """
+            stmt = sql.SQL("""\
             CREATE TABLE IF NOT EXISTS {table} (
                 id UUID PRIMARY KEY,
                 class_name VARCHAR NOT NULL,
@@ -57,8 +56,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
                 acknowledged_at TIMESTAMP,
                 visibility_timeout INTEGER NOT NULL
             )
-            """,
-            ).format(table=self._full_table_identifier)
+            """).format(table=self._full_table_identifier)
             # TODO create table task_failure
             await conn.execute(stmt)
 
@@ -68,12 +66,10 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
         visibility_timeout: int = 30,
     ) -> None:
         async with self._connection_pool.connection() as conn:
-            stmt = sql.SQL(
-                """\
+            stmt = sql.SQL("""\
             INSERT INTO {table} (id, class_name, module_name, data, enqueued_at, visibility_timeout)
             VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            ).format(table=self._full_table_identifier)
+            """).format(table=self._full_table_identifier)
 
             class_name = task.__class__.__name__
             module_name = task.__class__.__module__
@@ -147,8 +143,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
         async with self._connection_pool.connection() as conn:
             cursor = conn.cursor(row_factory=dict_row)
             cursor = await cursor.execute(
-                sql.SQL(
-                    """\
+                sql.SQL("""\
                 UPDATE {table}
                 SET dequeued_at = NOW()
                 WHERE id = (
@@ -166,8 +161,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
                         1
                 )
                 RETURNING id, class_name, module_name, data
-                """,
-                ).format(table=self._full_table_identifier),
+                """).format(table=self._full_table_identifier),
             )
 
             return await cursor.fetchone()
