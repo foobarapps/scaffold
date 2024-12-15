@@ -1,7 +1,24 @@
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Awaitable, Callable
+from functools import wraps
+from typing import Any, Concatenate
+
+from werkzeug.exceptions import Unauthorized
 
 from .base_controller import BaseController
+
+
+def login_required[
+    S: BaseController, **P,
+    R,
+](f: Callable[Concatenate[S, P], Awaitable[R]]) -> Callable[Concatenate[S, P], Awaitable[R]]:
+    @wraps(f)
+    async def decorated_function(self: S, *args: P.args, **kwargs: P.kwargs) -> R:
+        user_id = self.session.get("user_id")
+        if user_id is None:
+            raise Unauthorized
+        return await f(self, *args, **kwargs)
+
+    return decorated_function
 
 
 def route[F: Callable](rule: str, **options: Any) -> Callable[[F], F]:  # noqa: ANN401
@@ -32,7 +49,7 @@ def template_context_processor[**P, R](f: Callable[P, R]) -> Callable[P, R]:
     return f
 
 
-def errorhandler[F: Callable, E: type[Exception]](exception: E) -> Callable[[F], F]:
+def error_handler[F: Callable, E: type[Exception]](exception: E) -> Callable[[F], F]:
     def decorator(f: F) -> F:
         setattr(f, "is_error_handler", True)
         setattr(f, "error_handler_exception", exception)
