@@ -57,7 +57,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
                 acknowledged_at TIMESTAMP,
                 visibility_timeout INTEGER NOT NULL
             )
-            """).format(schema=self._schema_name, table=self._full_table_identifier)
+            """).format(schema=sql.Identifier(self._schema_name), table=self._full_table_identifier)
             # TODO create table task_failure
             await conn.execute(stmt)
 
