@@ -46,6 +46,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
         async with self._connection_pool.connection() as conn:
             # TODO add queue name
             stmt = sql.SQL("""\
+            CREATE SCHEMA IF NOT EXISTS {schema};
             CREATE TABLE IF NOT EXISTS {table} (
                 id UUID PRIMARY KEY,
                 class_name VARCHAR NOT NULL,
@@ -56,7 +57,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
                 acknowledged_at TIMESTAMP,
                 visibility_timeout INTEGER NOT NULL
             )
-            """).format(table=self._full_table_identifier)
+            """).format(schema=self._schema_name, table=self._full_table_identifier)
             # TODO create table task_failure
             await conn.execute(stmt)
 
