@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 
 from .decorators import Command
 
@@ -22,16 +21,13 @@ class BaseCLIApp:
                     subparser.add_argument(*args, **kwargs)
                 subparser.set_defaults(func=command)
 
-    def run(self) -> None:
+    async def run(self) -> None:
         args = self.parser.parse_args()
 
         if hasattr(args, "func"):
             kwargs = dict(vars(args))
             del kwargs["func"]
-            result = args.func(self, **kwargs)
-
-            if asyncio.iscoroutine(result):
-                asyncio.run(result)
+            await args.func(self, **kwargs)
 
         else:
             self.parser.print_help()
