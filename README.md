@@ -19,7 +19,8 @@ Scaffold is a full-stack web framework that makes it easy to build apps followin
 - Dev web server with support for debugging from your favorite IDE
 - Local development with Docker Compose (for dev/prod parity)
 - Zero-downtime deployment with Docker Swarm, Traefik (with Let's Encrypt certificates), and GitHub Actions
-- Project generator
+- Project generation via cruft (which builds on top of Cookiecutter) that makes it easy to update the project to the latest template version
+- Dependency management via uv
 - And more...
 
 It consists of a library (this repo) and a [project template](https://github.com/foobarapps/scaffold-template).
@@ -393,6 +394,24 @@ class Message:
     is_from_bot: bool
 ```
 
+#### Assemblers
+
+`app/application/assemblers/message_assembler.py`:
+```python
+from app.application.dtos.message import Message as MessageDTO
+from app.domain.message import BotMessage, Message
+
+
+class MessageAssembler:
+    @staticmethod
+    def assemble_dto(message: Message) -> MessageDTO:
+        return MessageDTO(
+            content=message.content,
+            sent_at=message.sent_at,
+            is_from_bot=isinstance(message, BotMessage),
+        )
+```
+
 ### Infrastructure layer
 
 `app/infrastructure/persistence_model.py`:
@@ -478,7 +497,7 @@ from app.infrastructure.repositories.sql_message_repository import SqlMessageRep
 class SqlUnitOfWork(GenericSqlUnitOfWork, UnitOfWork):
     @typing.override
     def __init__(self, session: AsyncSession) -> None:
-				# ...
+        # ...
         self.messages = SqlMessageRepository(session)
 ```
 
