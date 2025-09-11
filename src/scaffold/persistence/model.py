@@ -3,37 +3,33 @@ import uuid
 
 import sqlalchemy as sa
 from sqlalchemy.orm import (
-    DeclarativeBase,
+    DeclarativeBaseNoMeta,
     Mapped,
-    MappedAsDataclass,
     mapped_column,
 )
 
 
-class TimestampMixin(MappedAsDataclass):
+class EntityMixin:
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(),
+        primary_key=True,
+        sort_order=-1,
+    )
+
+
+class TimestampMixin:
     created_at: Mapped[datetime.datetime] = mapped_column(
         sa.DateTime,
         nullable=False,
         server_default=sa.func.timezone("UTC", sa.func.now()),
-        init=False,
     )
     updated_at: Mapped[datetime.datetime] = mapped_column(
         sa.DateTime,
         nullable=False,
         server_default=sa.func.timezone("UTC", sa.func.now()),
-        onupdate=datetime.datetime.utcnow,
-        init=False,
+        onupdate=datetime.datetime.now(datetime.UTC),
     )
 
 
-class EntityMixin(MappedAsDataclass):
-    id: Mapped[uuid.UUID] = mapped_column(
-        sa.Uuid(),
-        primary_key=True,
-        server_default=sa.text("gen_random_uuid()"),
-        sort_order=-1,
-    )
-
-
-class Base(MappedAsDataclass, DeclarativeBase, kw_only=True):
+class Base(DeclarativeBaseNoMeta):
     pass

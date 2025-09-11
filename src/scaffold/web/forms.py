@@ -1,3 +1,5 @@
+from typing import Any
+
 from quart import current_app, session
 from quart.sessions import SessionMixin
 from wtforms import Form
@@ -15,4 +17,11 @@ class BaseForm(Form):
 
         @property
         def csrf_secret(self) -> bytes:
-            return current_app.config["SECRET_KEY"]
+            secret_key: Any = current_app.config["SECRET_KEY"]
+            if secret_key is None:
+                msg = "SECRET_KEY is not configured"
+                raise ValueError(msg)
+            if not isinstance(secret_key, bytes):
+                msg = "SECRET_KEY must be bytes"
+                raise TypeError(msg)
+            return secret_key

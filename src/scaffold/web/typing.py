@@ -164,9 +164,33 @@ class LifespanShutdownFailedEvent(TypedDict):
     message: str
 
 
-type ASGIReceiveEvent = HTTPRequestEvent | HTTPDisconnectEvent | WebsocketConnectEvent | WebsocketReceiveEvent | WebsocketDisconnectEvent | LifespanStartupEvent | LifespanShutdownEvent
+type ASGIReceiveEvent = (
+    HTTPRequestEvent
+    | HTTPDisconnectEvent
+    | WebsocketConnectEvent
+    | WebsocketReceiveEvent
+    | WebsocketDisconnectEvent
+    | LifespanStartupEvent
+    | LifespanShutdownEvent
+)
 
-type ASGISendEvent = HTTPResponseStartEvent | HTTPResponseBodyEvent | HTTPResponseTrailersEvent | HTTPServerPushEvent | HTTPEarlyHintEvent | HTTPDisconnectEvent | WebsocketAcceptEvent | WebsocketSendEvent | WebsocketResponseStartEvent | WebsocketResponseBodyEvent | WebsocketCloseEvent | LifespanStartupCompleteEvent | LifespanStartupFailedEvent | LifespanShutdownCompleteEvent | LifespanShutdownFailedEvent
+type ASGISendEvent = (
+    HTTPResponseStartEvent
+    | HTTPResponseBodyEvent
+    | HTTPResponseTrailersEvent
+    | HTTPServerPushEvent
+    | HTTPEarlyHintEvent
+    | HTTPDisconnectEvent
+    | WebsocketAcceptEvent
+    | WebsocketSendEvent
+    | WebsocketResponseStartEvent
+    | WebsocketResponseBodyEvent
+    | WebsocketCloseEvent
+    | LifespanStartupCompleteEvent
+    | LifespanStartupFailedEvent
+    | LifespanShutdownCompleteEvent
+    | LifespanShutdownFailedEvent
+)
 
 type ASGIReceiveCallable = Callable[[], Awaitable[ASGIReceiveEvent]]
 type ASGISendCallable = Callable[[ASGISendEvent], Awaitable[None]]

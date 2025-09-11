@@ -41,6 +41,7 @@ dev = [
     "pytest>=8.3.3",
     "ruff>=0.8.0",
     "black>=24.10.0",
+    "pyright>=1.1.403",
 ]
 
 [tool.pytest.ini_options]
@@ -82,3 +83,8 @@ extend-ignore = ["A002", "ANN101", "ANN102", "B010", "S101"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["scaffold", "tests"]
+
+[tool.pyright]
+include = ["src", "tests"]
+strict = ["src"]
+typeCheckingMode = "strict"

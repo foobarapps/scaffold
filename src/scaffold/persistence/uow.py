@@ -1,14 +1,18 @@
-from collections.abc import Sequence
+import typing
 from types import TracebackType
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .repository import GenericSqlRepository
+
+class SyncableRepository(typing.Protocol):
+    def sync(self) -> None: ...
+    def clear_identity_map(self) -> None: ...
 
 
-class GenericSqlUnitOfWork:
+class BaseSqlUnitOfWork:
     def __init__(self, session: AsyncSession) -> None:
-        self._session = session
+        self.session = session
+        self.repositories: list[SyncableRepository] = []
 
     async def __aenter__(self) -> None:
         return
@@ -20,17 +24,22 @@ class GenericSqlUnitOfWork:
         tb: TracebackType,
     ) -> None:
         await self.rollback()
-        await self._session.close()
+        await self.session.close()
 
     async def commit(self) -> None:
-        for repo in self._repositories:
-            await repo.sync_state()
+        # TODO close the UoW after committing so that it can't be used again?
 
-        await self._session.commit()
+        for repo in self.repositories:
+            repo.sync()
+
+        await self.session.commit()
+
+        # Clear identity maps after successful commit
+        for repo in self.repositories:
+            repo.clear_identity_map()
 
     async def rollback(self) -> None:
-        await self._session.rollback()
+        await self.session.rollback()
 
-    @property
-    def _repositories(self) -> Sequence[GenericSqlRepository]:
-        return [value for value in self.__dict__.values() if isinstance(value, GenericSqlRepository)]
+    def register_repository(self, repo: SyncableRepository) -> None:
+        self.repositories.append(repo)

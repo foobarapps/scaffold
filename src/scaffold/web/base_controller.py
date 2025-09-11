@@ -14,6 +14,8 @@ from quart import (
 from quart.sessions import SessionMixin
 from quart.typing import ResponseValue
 
+# TODO define its own protocols for the return values so that it's not leaking Quart types
+
 
 class BaseController:
     name: ClassVar[str]

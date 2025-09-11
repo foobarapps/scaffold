@@ -1,78 +1,56 @@
 import abc
-from types import get_original_bases
-from typing import Protocol, final, get_args, override
+import typing
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
-
-class EntityId(Protocol):
-    @property
-    def value(self) -> object: ...
+from .uow import BaseSqlUnitOfWork
 
 
-class Entity(Protocol):
-    @property
-    def id(self) -> EntityId: ...
+class Mapper[E, DTO](typing.Protocol):
+    def map_persistence_to_domain(self, dto: DTO) -> E: ...
+
+    # TODO rename to "map" or "apply_changes"?
+    def sync_domain_to_persistence(self, entity: E, dto: DTO | None = None) -> DTO: ...
 
 
-class GenericSqlRepository[E: Entity, ID: EntityId, DTO](abc.ABC):
-    dto_class: type[DTO]
+class GenericSqlRepository[E, DTO](abc.ABC):
+    mapper: Mapper[E, DTO]
 
-    @override
-    def __init_subclass__(cls) -> None:
-        # TODO Check that the runtime type of the ID type param is the same as the type hint of E.id.
-        # Ideally, we would like to do something like `GenericSqlRepository[ID: EntityId, E: Entity[ID], DTO](abc.ABC)`
-        # to check it statically but that's currently not possible.
+    def __init__(self, uow: BaseSqlUnitOfWork) -> None:
+        self._session = uow.session
+        # Identity map tracks domain objects to their persistence counterparts.
+        self._identity_map: dict[E, DTO] = {}
+        # Automatically register this repository with the UoW.
+        uow.register_repository(self)
 
-        cls.dto_class = get_args(get_original_bases(cls)[0])[2]
+    @typing.final
+    def add(self, entity: E, /) -> None:
+        persistence_obj = self.mapper.sync_domain_to_persistence(entity)
 
-        return super().__init_subclass__()
+        self._identity_map[entity] = persistence_obj
 
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-        self._identity_map: dict[EntityId, E] = {}
+        self._session.add(persistence_obj)
 
-    async def get(self, entity_id: ID) -> E | None:
-        if entity_id in self._identity_map:
-            return self._identity_map[entity_id]
+    @typing.final
+    async def remove(self, entity: E, /) -> None:
+        try:
+            persistence_obj = self._identity_map.pop(entity)
+        except KeyError:
+            msg = "Entity must be tracked by the Unit of Work before removal"
+            raise ValueError(msg) from None
 
-        dto = await self._session.get(self.dto_class, entity_id.value)
+        await self._session.delete(persistence_obj)
 
-        if dto is not None:
-            return self.map_dto_to_entity_and_track(dto)
-
-        return None
-
-    def add(self, entity: E) -> None:
-        dto = self._map_entity_to_dto(entity)
-        self._session.add(dto)
-        self._track(entity)
-
-    async def remove(self, entity: E) -> None:
-        dto = self._map_entity_to_dto(entity)
-        await self._session.delete(dto)
-        self._identity_map.pop(entity.id, None)
-
-    @final
-    def map_dto_to_entity_and_track(self, dto: DTO) -> E:
-        entity = self._map_dto_to_entity(dto)
-        self._track(entity)
+    @typing.final
+    def _map_persistence_to_domain_and_track(self, dto: DTO) -> E:
+        entity = self.mapper.map_persistence_to_domain(dto)
+        self._identity_map[entity] = dto
         return entity
 
-    @abc.abstractmethod
-    def _map_entity_to_dto(self, entity: E) -> DTO:
-        """Convert a domain entity to a DTO."""
-        pass
+    @typing.final
+    def sync(self) -> None:
+        for domain_obj, persistence_obj in self._identity_map.items():
+            self.mapper.sync_domain_to_persistence(domain_obj, persistence_obj)
 
-    @abc.abstractmethod
-    def _map_dto_to_entity(self, dto: DTO) -> E:
-        """Convert a DTO to a domain entity."""
-        pass
-
-    def _track(self, entity: E) -> None:
-        self._identity_map[entity.id] = entity
-
-    async def sync_state(self) -> None:
-        for entity in self._identity_map.values():
-            dto = self._map_entity_to_dto(entity)
-            await self._session.merge(dto)
+    @typing.final
+    def clear_identity_map(self) -> None:
+        """Clear the identity map after a successful commit."""
+        self._identity_map.clear()

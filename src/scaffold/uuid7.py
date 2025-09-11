@@ -20,7 +20,7 @@ def uuid7(timestamp: float | None = None) -> uuid.UUID:
         uuid.UUID: A UUID version 7.
     """
     if timestamp is None:
-        timestamp = datetime.datetime.utcnow().timestamp()
+        timestamp = datetime.datetime.now(datetime.UTC).timestamp()
 
     # Convert timestamp to milliseconds
     timestamp_ms = int(timestamp * 1000)

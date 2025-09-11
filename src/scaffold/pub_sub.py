@@ -14,8 +14,8 @@ class PostgresPubSubService:
     ) -> None:
         self._connection_pool = connection_pool
         self._database_channel = database_channel
-        self._subscribers: dict[str, list[asyncio.Queue]] = {}
-        self._listener_task: asyncio.Task | None = None
+        self._subscribers: dict[str, list[asyncio.Queue[str]]] = {}
+        self._listener_task: asyncio.Task[None] | None = None
 
     async def init(self) -> None:
         await self._connection_pool.open()
@@ -32,7 +32,7 @@ class PostgresPubSubService:
             await conn.commit()
 
     async def subscribe(self, channel_name: str) -> AsyncGenerator[str, None]:
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue[str] = asyncio.Queue()
         self._subscribers.setdefault(channel_name, []).append(queue)
 
         # Start the listener task if it's not already running
@@ -90,7 +90,7 @@ class PostgresPubSubService:
 
 class AsyncioPubSubService:
     def __init__(self) -> None:
-        self.channels: dict[str, set[asyncio.Queue]] = {}
+        self.channels: dict[str, set[asyncio.Queue[str]]] = {}
 
     async def publish(self, channel_name: str, payload: str) -> None:
         if channel_name not in self.channels:
@@ -103,7 +103,7 @@ class AsyncioPubSubService:
         if channel_name not in self.channels:
             self.channels[channel_name] = set()
 
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue[str] = asyncio.Queue()
         self.channels[channel_name].add(queue)
 
         try:

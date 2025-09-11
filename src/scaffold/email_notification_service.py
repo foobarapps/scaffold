@@ -25,6 +25,7 @@ class MailSender(abc.ABC):
     async def send(
         self,
         message: Message,
+        /,
     ) -> None:
         raise NotImplementedError
 
@@ -52,7 +53,7 @@ class EmailNotificationService:
             loader=FileSystemLoader(templates_dir),
             autoescape=select_autoescape(),
         )
-        env.globals["url_for"] = partial(url_for, _external=True)
+        env.globals["url_for"] = partial(url_for, _external=True)  # type: ignore
         return env
 
     async def render_template(

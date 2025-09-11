@@ -15,9 +15,11 @@ async def test_app() -> None:
             return "Hello, World!"
 
     app = BaseWebApp("__main__")
-    app.register_controllers({
-        TestController: lambda: TestController(),
-    })
+    app.register_controllers(
+        {
+            TestController: lambda: TestController(),
+        },
+    )
 
     client = app.test_client()
 

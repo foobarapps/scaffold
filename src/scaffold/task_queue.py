@@ -19,7 +19,7 @@ class HandlerProtocol[T](Protocol):
     async def handle_task(self, task: T) -> None: ...
 
 
-class PostgresTaskQueue[T, H: HandlerProtocol]:
+class PostgresTaskQueue[T]:
     @override
     def __init_subclass__(cls) -> None:
         # TODO Check that the runtime type of the `T` type param is the same as the type hint of `H.handle_task` `task` param.
@@ -35,7 +35,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
         table_name: str = "task",
         notify_channel_name: str = "task_queue_notifications",
     ) -> None:
-        self._handler_factories: dict[type[T], Callable[[], H]] = {}
+        self._handler_factories: dict[type[T], Callable[[], HandlerProtocol[T]]] = {}
         self._connection_pool = connection_pool
         self._schema_name = schema_name
         self._table_name = table_name
@@ -57,7 +57,10 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
                 acknowledged_at TIMESTAMP,
                 visibility_timeout INTEGER NOT NULL
             )
-            """).format(schema=sql.Identifier(self._schema_name), table=self._full_table_identifier)
+            """).format(
+                schema=sql.Identifier(self._schema_name),
+                table=self._full_table_identifier,
+            )
             # TODO create table task_failure
             await conn.execute(stmt)
 
@@ -91,7 +94,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
                     class_name,
                     module_name,
                     data,
-                    datetime.datetime.utcnow(),
+                    datetime.datetime.now(datetime.UTC),
                     visibility_timeout,
                 ),
             )
@@ -111,18 +114,11 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
 
     async def handle_tasks(self) -> None:
         async with asyncio.TaskGroup() as tg:
-            async for task_data in self._tasks:
-                task_id = task_data["id"]
-                # TODO cache this
-                task_module = importlib.import_module(task_data["module_name"])
-                task_class = getattr(task_module, task_data["class_name"])
-                task = pydantic.TypeAdapter(task_class).validate_python(
-                    task_data["data"],
-                )
+            async for task_id, task in self._tasks:
                 tg.create_task(self.handle_task(task_id, task))
 
     @property
-    async def _tasks(self) -> AsyncGenerator[dict]:
+    async def _tasks(self) -> AsyncGenerator[tuple[uuid.UUID, T]]:
         async with self._connection_pool.connection() as listen_conn:
             await listen_conn.execute(
                 sql.SQL("LISTEN {channel_name}").format(
@@ -140,7 +136,7 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
                     async for _ in listen_conn.notifies(timeout=1):
                         break
 
-    async def _get_task(self) -> dict | None:
+    async def _get_task(self) -> tuple[uuid.UUID, T] | None:
         async with self._connection_pool.connection() as conn:
             cursor = conn.cursor(row_factory=dict_row)
             cursor = await cursor.execute(
@@ -165,7 +161,20 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
                 """).format(table=self._full_table_identifier),
             )
 
-            return await cursor.fetchone()
+            task_data = await cursor.fetchone()
+
+            if task_data is None:
+                return None
+
+            task_id = task_data["id"]
+            # TODO cache this
+            task_module = importlib.import_module(task_data["module_name"])
+            task_class = getattr(task_module, task_data["class_name"])
+            task = pydantic.TypeAdapter(task_class).validate_python(
+                task_data["data"],
+            )
+
+            return task_id, task
 
     async def ack(self, task_id: uuid.UUID) -> None:
         async with self._connection_pool.connection() as conn:
@@ -179,7 +188,11 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
             )
             await conn.commit()
 
-    def register(self, task_type: type[T], handler_factory: Callable[[], H]) -> None:
+    def register(
+        self,
+        task_type: type[T],
+        handler_factory: Callable[[], HandlerProtocol[T]],
+    ) -> None:
         self._handler_factories[task_type] = handler_factory
 
     @property
@@ -187,17 +200,21 @@ class PostgresTaskQueue[T, H: HandlerProtocol]:
         return sql.Identifier(self._schema_name, self._table_name)
 
 
-class GenericFakeTaskQueue[T, H: HandlerProtocol]:
+class GenericFakeTaskQueue[T]:
     def __init__(
         self,
     ) -> None:
-        self.handler_factories: dict[type[T], Callable[[], H]] = {}
+        self.handler_factories: dict[type[T], Callable[[], HandlerProtocol[T]]] = {}
         self.queue: list[T] = []
 
     def enqueue(self, task: T) -> None:
         self.queue.append(task)
 
-    def register(self, task_type: type[T], handler_factory: Callable[[], H]) -> None:
+    def register(
+        self,
+        task_type: type[T],
+        handler_factory: Callable[[], HandlerProtocol[T]],
+    ) -> None:
         self.handler_factories[task_type] = handler_factory
 
     async def run(self) -> None:

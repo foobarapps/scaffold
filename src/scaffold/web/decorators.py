@@ -8,9 +8,12 @@ from .base_controller import BaseController
 
 
 def login_required[
-    S: BaseController, **P,
+    S: BaseController,
+    **P,
     R,
-](f: Callable[Concatenate[S, P], Awaitable[R]]) -> Callable[Concatenate[S, P], Awaitable[R]]:
+](
+    f: Callable[Concatenate[S, P], Awaitable[R]],
+) -> Callable[Concatenate[S, P], Awaitable[R]]:
     @wraps(f)
     async def decorated_function(self: S, *args: P.args, **kwargs: P.kwargs) -> R:
         user_id = self.session.get("user_id")
@@ -21,8 +24,11 @@ def login_required[
     return decorated_function
 
 
-def route[F: Callable](rule: str, **options: Any) -> Callable[[F], F]:  # noqa: ANN401
-    def decorator(f: F) -> F:
+def route[**P, R](
+    rule: str,
+    **options: Any,  # noqa: ANN401
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    def decorator(f: Callable[P, R]) -> Callable[P, R]:
         setattr(f, "route", (rule, options))
         return f
 
@@ -49,8 +55,10 @@ def template_context_processor[**P, R](f: Callable[P, R]) -> Callable[P, R]:
     return f
 
 
-def error_handler[F: Callable, E: type[Exception]](exception: E) -> Callable[[F], F]:
-    def decorator(f: F) -> F:
+def error_handler[**P, R](
+    exception: type[Exception],
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    def decorator(f: Callable[P, R]) -> Callable[P, R]:
         setattr(f, "is_error_handler", True)
         setattr(f, "error_handler_exception", exception)
         return f
@@ -58,12 +66,12 @@ def error_handler[F: Callable, E: type[Exception]](exception: E) -> Callable[[F]
     return decorator
 
 
-def controller(
+def controller[C: BaseController](
     name: str,
     url_prefix: str | None = None,
     subdomain: str | None = None,
-) -> Callable[[type[BaseController]], type[BaseController]]:
-    def decorator(controller_class: type[BaseController]) -> type[BaseController]:
+) -> Callable[[type[C]], type[C]]:
+    def decorator(controller_class: type[C]) -> type[C]:
         controller_class.name = name
         controller_class.url_prefix = url_prefix
         controller_class.subdomain = subdomain

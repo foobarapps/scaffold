@@ -4,7 +4,7 @@ An extremely simple DI container (in <100 lines of code) with auto-wiring based 
 
 import inspect
 from collections.abc import Awaitable, Callable
-from typing import Self, cast
+from typing import cast
 
 # Since `type` does not accept abstract classes, we have to use `Callable` as well (although it's not ideal), see https://github.com/python/mypy/issues/4717
 type Dependency[T] = type[T] | Callable[..., T]
@@ -13,9 +13,9 @@ type Provider[T] = type[T] | Callable[["Container"], T]
 
 class Container:
     def __init__(self) -> None:
-        self.providers: dict[Dependency, Provider] = {}
-        self.singletons: dict[Dependency, object] = {}
-        self.init_functions: list[Callable] = []
+        self.providers: dict[Dependency[object], Provider[object]] = {}
+        self.singletons: dict[Dependency[object], object] = {}
+        self.init_functions: list[Callable[[Container], Awaitable[None]]] = []
 
     def add_singleton[T](self, cls: Dependency[T], provider: Provider[T]) -> None:
         self.providers[cls] = provider
@@ -26,7 +26,7 @@ class Container:
 
     def add_init_function(
         self,
-        init_function: Callable[[Self], Awaitable[None]],
+        init_function: Callable[["Container"], Awaitable[None]],
     ) -> None:
         self.init_functions.append(init_function)
 
@@ -35,6 +35,8 @@ class Container:
             await init_function(self)
 
     def resolve[T](self, cls: Dependency[T]) -> T:
+        # TODO add runtime type checking so that it fails during bootstrap
+
         instance: T
 
         if cls in self.providers:
@@ -44,10 +46,10 @@ class Container:
                 return cast(T, self.singletons[cls])
 
             if isinstance(provider, type):
-                instance = self._instantiate(provider)
+                instance = self._instantiate(cast(type[T], provider))
 
             else:
-                instance = provider(self)
+                instance = cast(T, provider(self))
 
             if cls in self.singletons:
                 self.singletons[cls] = instance
@@ -55,7 +57,7 @@ class Container:
             return instance
 
         if isinstance(cls, type):
-            return self._instantiate(cls)
+            return self._instantiate(cast(type[T], cls))
 
         raise RuntimeError
 
@@ -74,8 +76,8 @@ class Container:
     def __getitem__[T](self, cls: Dependency[T]) -> T:
         return self.resolve(cls)
 
-    def get_factory[C](self, cls: Dependency[C]) -> Callable[[], C]:
-        def factory() -> C:
+    def get_factory[T](self, cls: Dependency[T]) -> Callable[[], T]:
+        def factory() -> T:
             return self[cls]
 
         return factory

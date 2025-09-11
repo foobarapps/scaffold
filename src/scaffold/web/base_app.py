@@ -3,19 +3,64 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from functools import wraps
 from graphlib import CycleError, TopologicalSorter
-from typing import Any, Concatenate, Protocol, cast
+from pathlib import Path
+from typing import Any, Concatenate, Protocol, cast, runtime_checkable
 
-from flask.sansio.app import App
+from flask.sansio.blueprints import Blueprint as SansioBlueprint  # type: ignore
 from flask.templating import Environment
-from quart import Blueprint, Quart, ResponseReturnValue, g, request
+from quart import (
+    Blueprint,
+    Quart,
+    ResponseReturnValue,
+    g,
+    request,
+    send_from_directory,  # type: ignore
+)
 from quart.ctx import AppContext
-from quart.typing import BeforeServingCallable, TestClientProtocol
+from quart.typing import (
+    BeforeRequestCallable,
+    BeforeServingCallable,
+    TemplateContextProcessorCallable,
+    TestClientProtocol,
+)
 
+from .assets import Assets
 from .base_controller import BaseController
 
 
-class Extension[A: App](Protocol):
-    def init_app(self, app: A) -> None: ...
+@runtime_checkable
+class RouteFunction(Protocol):
+    route: tuple[str, dict[str, Any]]
+
+
+@runtime_checkable
+class ErrorHandlerCallbackFunction(Protocol):
+    is_error_handler: bool
+    error_handler_exception: type[Exception]
+
+
+@runtime_checkable
+class BeforeServingCallbackFunction(Protocol):
+    is_before_serving_callback: bool
+
+
+@runtime_checkable
+class BeforeRequestCallbackFunction(Protocol):
+    is_before_request_callback: bool
+
+
+@runtime_checkable
+class AfterRequestCallbackFunction(Protocol):
+    is_after_request_callback: bool
+
+
+@runtime_checkable
+class TemplateContextProcessorFunction(Protocol):
+    is_template_context_processor: bool
+
+
+class Extension(Protocol):
+    def init_app(self, app: "BaseWebApp") -> None: ...
 
 
 class BaseWebApp:
@@ -29,7 +74,7 @@ class BaseWebApp:
         self.__app = Quart(root_package_name)
 
         # TODO expose all config vars (https://flask.palletsprojects.com/en/stable/config/) through the constructor
-        self.__app.config.update(
+        self.__app.config.update(  # type: ignore
             SECRET_KEY=secret_key,
             SERVER_NAME=server_name,
             PROPAGATE_EXCEPTIONS=propagate_exceptions,
@@ -45,12 +90,16 @@ class BaseWebApp:
         ] = {}
         self.__endpoint_to_controller_class: dict[str, type[BaseController]] = {}
 
+        # Assets will be initialized in setup
+        self.__assets: Assets | None = None
+
         self.__app.before_request(self.__create_controller_instance)
 
         self.__register_app_callbacks()
+        self.__setup_assets_serving()
 
         @self.__app.route("/health")
-        def health() -> ResponseReturnValue:
+        def _() -> ResponseReturnValue:
             return "", 200
 
         self.init()
@@ -59,15 +108,34 @@ class BaseWebApp:
         pass
 
     def register_extension(self, extension: Extension) -> None:
-        extension.init_app(self.__app)
+        # extension.init_app(self.__app)
+        extension.init_app(self)
 
     @property
-    def config(self) -> Mapping:
+    def config(self) -> Mapping[str, Any]:
         return self.__app.config
+
+    @property
+    def debug(self) -> bool:
+        return self.__app.debug
+
+    @debug.setter
+    def debug(self, value: bool) -> None:
+        self.__app.debug = value
 
     @property
     def jinja_env(self) -> Environment:
         return self.__app.jinja_env
+
+    def context_processor(
+        self,
+        context_processor_callable: TemplateContextProcessorCallable,
+    ) -> None:
+        self.__app.context_processor(context_processor_callable)
+
+    @property
+    def static_folder(self) -> str | None:
+        return self.__app.static_folder
 
     def app_context(self) -> AppContext:
         return self.__app.app_context()
@@ -82,6 +150,9 @@ class BaseWebApp:
     def before_serving(self, before_serving_callable: BeforeServingCallable) -> None:
         self.__app.before_serving(before_serving_callable)
 
+    def before_request(self, before_request_callable: BeforeRequestCallable) -> None:
+        self.__app.before_request(before_request_callable)
+
     def register_controllers(
         self,
         controller_factories: dict[type[BaseController], Callable[[], BaseController]],
@@ -94,7 +165,7 @@ class BaseWebApp:
             controller_parents,
         )
 
-        blueprints = {}
+        blueprints: dict[type[BaseController], Blueprint] = {}
 
         for controller_class in sorted_controller_classes:
             blueprint = self.__create_blueprint(controller_class)
@@ -111,7 +182,7 @@ class BaseWebApp:
             else:
                 self.__app.register_blueprint(blueprint)
 
-        blueprint_to_full_names = defaultdict(list)
+        blueprint_to_full_names: dict[SansioBlueprint, list[str]] = defaultdict(list)
 
         for full_name, bp in self.__app.blueprints.items():
             blueprint_to_full_names[bp].append(full_name)
@@ -126,7 +197,9 @@ class BaseWebApp:
         if request.endpoint is not None:
             blueprint_full_name = request.endpoint.rsplit(".", maxsplit=1)[0]
             if blueprint_full_name in self.__endpoint_to_controller_class:
-                controller_class = self.__endpoint_to_controller_class[blueprint_full_name]
+                controller_class = self.__endpoint_to_controller_class[
+                    blueprint_full_name
+                ]
                 g.controller = self.__controller_factories[controller_class]()
 
     def __create_blueprint(
@@ -148,13 +221,13 @@ class BaseWebApp:
 
     @staticmethod
     def __bind_request_controller[
-        S, **P,
+        S,
+        **P,
         R,
     ](
-        func: Callable[Concatenate[S, P], R] | Callable[Concatenate[S, P], Awaitable[R]],
-    ) -> (
-        Callable[P, R] | Callable[P, Awaitable[R]]
-    ):
+        func: Callable[Concatenate[S, P], R]
+        | Callable[Concatenate[S, P], Awaitable[R]],
+    ) -> Callable[P, R] | Callable[P, Awaitable[R]]:
         if inspect.iscoroutinefunction(func):
 
             @wraps(func)
@@ -194,31 +267,31 @@ class BaseWebApp:
     ) -> None:
         for view_function_name, view_function in inspect.getmembers(
             controller_class,
-            predicate=inspect.isfunction,
+            predicate=lambda member: inspect.isfunction(member)
+            and isinstance(member, RouteFunction),
         ):
-            if hasattr(view_function, "route"):
-                rule, options = view_function.route
+            rule, options = view_function.route
 
-                if "websocket" in options and options["websocket"]:
-                    wrapped_view_function = self.__bind_websocket_controller(
-                        view_function,
-                        controller_class,
-                    )
-                else:
-                    wrapped_view_function = self.__bind_request_controller(
-                        view_function,
-                    )
-
-                blueprint.add_url_rule(
-                    rule=rule,
-                    endpoint=view_function_name,
-                    view_func=wrapped_view_function,
-                    **options,
+            if "websocket" in options and options["websocket"]:
+                wrapped_view_function = self.__bind_websocket_controller(
+                    view_function,
+                    controller_class,
                 )
+            else:
+                wrapped_view_function = self.__bind_request_controller(
+                    view_function,
+                )
+
+            blueprint.add_url_rule(
+                rule=rule,
+                endpoint=view_function_name,
+                view_func=wrapped_view_function,
+                **options,
+            )
 
     def __register_app_callbacks(self) -> None:
         for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
-            if hasattr(method, "is_before_serving_callback"):
+            if isinstance(method, BeforeServingCallbackFunction):
                 self.__app.before_serving(method)
 
     def __register_controller_callbacks(
@@ -230,19 +303,16 @@ class BaseWebApp:
             controller_class,
             predicate=inspect.isfunction,
         ):
-            if hasattr(callback, "is_before_request_callback"):
+            if isinstance(callback, BeforeRequestCallbackFunction):
                 blueprint.before_request(self.__bind_request_controller(callback))
 
-            if hasattr(callback, "is_after_request_callback"):
+            if isinstance(callback, AfterRequestCallbackFunction):
                 blueprint.after_request(self.__bind_request_controller(callback))
 
-            if hasattr(callback, "is_template_context_processor"):
+            if isinstance(callback, TemplateContextProcessorFunction):
                 blueprint.context_processor(self.__bind_request_controller(callback))
 
-            if hasattr(callback, "is_error_handler") and hasattr(
-                callback,
-                "error_handler_exception",
-            ):
+            if isinstance(callback, ErrorHandlerCallbackFunction):
                 blueprint.register_error_handler(
                     callback.error_handler_exception,
                     self.__bind_request_controller(callback),
@@ -270,7 +340,10 @@ class BaseWebApp:
     def __get_controllers_dependency_graph(
         self,
     ) -> dict[type[BaseController], list[type[BaseController]]]:
-        controllers_dependency_graph = {}
+        controllers_dependency_graph: dict[
+            type[BaseController],
+            list[type[BaseController]],
+        ] = {}
         for controller_class in self.__controller_factories.keys():
             parents = [
                 base
@@ -279,6 +352,48 @@ class BaseWebApp:
             ]
             controllers_dependency_graph[controller_class] = parents
         return controllers_dependency_graph
+
+    def __setup_assets_serving(self) -> None:
+        """Set up asset serving functionality."""
+        self.__app.before_serving(self.__setup_assets)
+        self.__app.context_processor(self.__template_context)
+
+        # Set up the blueprint for serving static files under '/assets'
+        blueprint = Blueprint("assets", __name__)
+        blueprint.add_url_rule(
+            "/assets/<path:path>",
+            "asset",
+            self.__serve_assets,
+        )
+        self.__app.register_blueprint(blueprint)
+
+    async def __setup_assets(self) -> None:
+        """Initialize assets when the app starts serving."""
+        if self.__app.static_folder is None:
+            error_message = "A static folder has to be set"
+            raise RuntimeError(error_message)
+
+        # Initialize assets container
+        static_dir = Path(self.__app.static_folder)
+        self.__assets = Assets(static_dir)
+        await self.__assets.update_file_maps()
+
+    async def __serve_assets(self, path: str) -> ResponseReturnValue:
+        """Serve assets with hashed filenames."""
+        if self.__app.static_folder is None:
+            error_message = "A static folder has to be set"
+            raise RuntimeError(error_message)
+
+        if self.__assets is None:
+            error_message = "Assets not initialized"
+            raise RuntimeError(error_message)
+
+        original_filename = self.__assets.get_original_filename(path)
+        return await send_from_directory(self.__app.static_folder, original_filename)
+
+    def __template_context(self) -> dict[str, Any]:
+        """Inject assets into template context."""
+        return {"assets": self.__assets}
 
     async def __call__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
         return await self.__app(*args, **kwargs)

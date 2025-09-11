@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import h11
-from watchfiles import awatch
+from watchfiles import awatch  # type: ignore[import-untyped]
 from wsproto import WSConnection
 from wsproto.connection import ConnectionType
 from wsproto.events import (
@@ -314,7 +314,7 @@ async def handle_connection(
 async def lifespan(
     app: ASGIApp,
     state: LifespanState,
-) -> AsyncGenerator:
+) -> AsyncGenerator[None, None]:
     scope: LifespanScope = {
         "type": "lifespan",
         "asgi": {"version": "3.0"},
@@ -339,7 +339,7 @@ async def lifespan(
             shutdown_complete.set()
 
     # Start lifespan
-    lifespan_task: asyncio.Task = asyncio.create_task(app(scope, receive, send))
+    lifespan_task: asyncio.Task[None] = asyncio.create_task(app(scope, receive, send))
 
     startup_complete_wait_task = asyncio.create_task(startup_complete.wait())
 
