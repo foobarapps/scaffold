@@ -17,7 +17,7 @@ class BaseForm(Form):
 
         @property
         def csrf_secret(self) -> bytes:
-            secret_key: Any = current_app.config["SECRET_KEY"]
+            secret_key: Any = current_app.config["SECRET_KEY"]  # pyright: ignore[reportUnknownVariableType]
             if secret_key is None:
                 msg = "SECRET_KEY is not configured"
                 raise ValueError(msg)

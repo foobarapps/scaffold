@@ -197,9 +197,7 @@ class BaseWebApp:
         if request.endpoint is not None:
             blueprint_full_name = request.endpoint.rsplit(".", maxsplit=1)[0]
             if blueprint_full_name in self.__endpoint_to_controller_class:
-                controller_class = self.__endpoint_to_controller_class[
-                    blueprint_full_name
-                ]
+                controller_class = self.__endpoint_to_controller_class[blueprint_full_name]
                 g.controller = self.__controller_factories[controller_class]()
 
     def __create_blueprint(
@@ -221,12 +219,10 @@ class BaseWebApp:
 
     @staticmethod
     def __bind_request_controller[
-        S,
-        **P,
+        S, **P,
         R,
     ](
-        func: Callable[Concatenate[S, P], R]
-        | Callable[Concatenate[S, P], Awaitable[R]],
+        func: Callable[Concatenate[S, P], R] | Callable[Concatenate[S, P], Awaitable[R]],
     ) -> Callable[P, R] | Callable[P, Awaitable[R]]:
         if inspect.iscoroutinefunction(func):
 
@@ -268,7 +264,7 @@ class BaseWebApp:
         for view_function_name, view_function in inspect.getmembers(
             controller_class,
             predicate=lambda member: inspect.isfunction(member)
-            and isinstance(member, RouteFunction),
+            and isinstance(member, RouteFunction),  # pyright: ignore[reportUnnecessaryIsInstance]
         ):
             rule, options = view_function.route
 
@@ -291,7 +287,7 @@ class BaseWebApp:
 
     def __register_app_callbacks(self) -> None:
         for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
-            if isinstance(method, BeforeServingCallbackFunction):
+            if isinstance(method, BeforeServingCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 self.__app.before_serving(method)
 
     def __register_controller_callbacks(
@@ -303,16 +299,16 @@ class BaseWebApp:
             controller_class,
             predicate=inspect.isfunction,
         ):
-            if isinstance(callback, BeforeRequestCallbackFunction):
+            if isinstance(callback, BeforeRequestCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 blueprint.before_request(self.__bind_request_controller(callback))
 
-            if isinstance(callback, AfterRequestCallbackFunction):
+            if isinstance(callback, AfterRequestCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 blueprint.after_request(self.__bind_request_controller(callback))
 
-            if isinstance(callback, TemplateContextProcessorFunction):
+            if isinstance(callback, TemplateContextProcessorFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 blueprint.context_processor(self.__bind_request_controller(callback))
 
-            if isinstance(callback, ErrorHandlerCallbackFunction):
+            if isinstance(callback, ErrorHandlerCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 blueprint.register_error_handler(
                     callback.error_handler_exception,
                     self.__bind_request_controller(callback),
