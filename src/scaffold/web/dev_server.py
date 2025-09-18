@@ -476,8 +476,10 @@ async def run_reloader(host: str, port: int) -> None:
         await process.wait()
 
     async def watch_files() -> None:
-        async for _ in awatch(""):
+        async for changes in awatch("."):
             print("Detected file changes. Triggering restart.")
+            for change, file_path in changes:
+                print("\t", f"{file_path} ({change.name})")
             return
 
     while not shutdown_event.is_set():
