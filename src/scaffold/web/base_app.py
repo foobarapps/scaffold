@@ -11,10 +11,13 @@ from flask.templating import Environment
 from quart import (
     Blueprint,
     Quart,
+    Request,
     ResponseReturnValue,
+    Websocket,
     g,
     request,
     send_from_directory,  # type: ignore
+    websocket,
 )
 from quart.ctx import AppContext
 from quart.typing import (
@@ -52,6 +55,16 @@ class BeforeRequestCallbackFunction(Protocol):
 @runtime_checkable
 class AfterRequestCallbackFunction(Protocol):
     is_after_request_callback: bool
+
+
+@runtime_checkable
+class BeforeWebSocketCallbackFunction(Protocol):
+    is_before_websocket_callback: bool
+
+
+@runtime_checkable
+class AfterWebSocketCallbackFunction(Protocol):
+    is_after_websocket_callback: bool
 
 
 @runtime_checkable
@@ -93,7 +106,8 @@ class BaseWebApp:
         # Assets will be initialized in setup
         self.__assets: Assets | None = None
 
-        self.__app.before_request(self.__create_controller_instance)
+        self.__app.before_request(self.__create_request_controller_instance)
+        self.__app.before_websocket(self.__create_websocket_controller_instance)
 
         self.__register_app_callbacks()
         self.__setup_assets_serving()
@@ -193,11 +207,24 @@ class BaseWebApp:
             for full_name in blueprint_to_full_names[blueprint]:
                 self.__endpoint_to_controller_class[full_name] = controller_class
 
-    def __create_controller_instance(self) -> None:
-        if request.endpoint is not None:
-            blueprint_full_name = request.endpoint.rsplit(".", maxsplit=1)[0]
+    def __create_request_controller_instance(self) -> None:
+        self.__create_controller_instance(request)
+
+    def __create_websocket_controller_instance(self) -> None:
+        self.__create_controller_instance(websocket)
+
+    def __create_controller_instance(
+        self,
+        request_or_websocket: Request | Websocket,
+    ) -> None:
+        if request_or_websocket.endpoint is not None:
+            blueprint_full_name = request_or_websocket.endpoint.rsplit(".", maxsplit=1)[
+                0
+            ]
             if blueprint_full_name in self.__endpoint_to_controller_class:
-                controller_class = self.__endpoint_to_controller_class[blueprint_full_name]
+                controller_class = self.__endpoint_to_controller_class[
+                    blueprint_full_name
+                ]
                 g.controller = self.__controller_factories[controller_class]()
 
     def __create_blueprint(
@@ -218,11 +245,13 @@ class BaseWebApp:
         return blueprint
 
     @staticmethod
-    def __bind_request_controller[
-        S, **P,
+    def __bind_controller[
+        S,
+        **P,
         R,
     ](
-        func: Callable[Concatenate[S, P], R] | Callable[Concatenate[S, P], Awaitable[R]],
+        func: Callable[Concatenate[S, P], R]
+        | Callable[Concatenate[S, P], Awaitable[R]],
     ) -> Callable[P, R] | Callable[P, Awaitable[R]]:
         if inspect.iscoroutinefunction(func):
 
@@ -238,24 +267,6 @@ class BaseWebApp:
 
         return sync_wrapper
 
-    def __bind_websocket_controller[
-        **P,
-        R,
-    ](
-        self,
-        func: Callable[Concatenate[BaseController, P], Awaitable[R]],
-        controller_class: type[BaseController],
-    ) -> Callable[
-        P,
-        Awaitable[R],
-    ]:
-        @wraps(func)
-        async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            controller = self.__controller_factories[controller_class]()
-            return await func(controller, *args, **kwargs)
-
-        return async_wrapper
-
     def __register_view_functions(
         self,
         blueprint: Blueprint,
@@ -268,15 +279,9 @@ class BaseWebApp:
         ):
             rule, options = view_function.route
 
-            if "websocket" in options and options["websocket"]:
-                wrapped_view_function = self.__bind_websocket_controller(
-                    view_function,
-                    controller_class,
-                )
-            else:
-                wrapped_view_function = self.__bind_request_controller(
-                    view_function,
-                )
+            wrapped_view_function = self.__bind_controller(
+                view_function,
+            )
 
             blueprint.add_url_rule(
                 rule=rule,
@@ -300,18 +305,24 @@ class BaseWebApp:
             predicate=inspect.isfunction,
         ):
             if isinstance(callback, BeforeRequestCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
-                blueprint.before_request(self.__bind_request_controller(callback))
+                blueprint.before_request(self.__bind_controller(callback))
 
             if isinstance(callback, AfterRequestCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
-                blueprint.after_request(self.__bind_request_controller(callback))
+                blueprint.after_request(self.__bind_controller(callback))
+
+            if isinstance(callback, BeforeWebSocketCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
+                blueprint.before_websocket(self.__bind_controller(callback))
+
+            if isinstance(callback, AfterWebSocketCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
+                blueprint.after_websocket(self.__bind_controller(callback))
 
             if isinstance(callback, TemplateContextProcessorFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
-                blueprint.context_processor(self.__bind_request_controller(callback))
+                blueprint.context_processor(self.__bind_controller(callback))
 
             if isinstance(callback, ErrorHandlerCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 blueprint.register_error_handler(
                     callback.error_handler_exception,
-                    self.__bind_request_controller(callback),
+                    self.__bind_controller(callback),
                 )
 
     @staticmethod
