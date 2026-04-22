@@ -13,7 +13,7 @@ import socket
 import sys
 import urllib.parse
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import h11
@@ -28,6 +28,7 @@ from wsproto.events import (
     Request,
     TextMessage,
 )
+from wsproto.utilities import ProtocolError
 
 from .typing import (
     ASGIApp,
@@ -45,6 +46,12 @@ def write(writer: asyncio.StreamWriter, data: bytes | None) -> None:
         writer.write(data)
 
 
+def parse_connection_tokens(header_value: bytes) -> set[bytes]:
+    return {
+        token.strip().lower() for token in header_value.split(b",") if token.strip()
+    }
+
+
 async def handle_http(
     app: ASGIApp,
     state: LifespanState,
@@ -54,7 +61,7 @@ async def handle_http(
     http_request: h11.Request,
     host: str,
     port: int,
-) -> None:
+) -> bool:
     print(f"{http_request.method.decode()} {http_request.target.decode()}")
 
     parsed_target = urllib.parse.urlparse(http_request.target.decode())
@@ -71,11 +78,15 @@ async def handle_http(
         "server": (host, port),
         "state": state,
     }
-
-    finished_sending_data = asyncio.Event()
+    response_complete = asyncio.Event()
+    keep_connection_open = True
 
     async def receive() -> ASGIReceiveEvent:
+        nonlocal keep_connection_open
         while True:
+            if response_complete.is_set():
+                return {"type": "http.disconnect"}
+
             event = conn.next_event()
 
             if isinstance(event, h11.Data):
@@ -97,15 +108,22 @@ async def handle_http(
                     write(
                         writer,
                         conn.send(
-                            h11.InformationalResponse(status_code=10, headers=[]),
+                            h11.InformationalResponse(status_code=100, headers=[]),
                         ),
                     )
                 data = await reader.read(1024)
-                conn.receive_data(data)
+                if not data:
+                    keep_connection_open = False
+                    return {"type": "http.disconnect"}
+                try:
+                    conn.receive_data(data)
+                except h11.RemoteProtocolError:
+                    keep_connection_open = False
+                    return {"type": "http.disconnect"}
+                continue
 
-            else:
-                await finished_sending_data.wait()
-                return {"type": "http.disconnect"}
+            keep_connection_open = False
+            return {"type": "http.disconnect"}
 
     async def send(message: ASGISendEvent) -> None:
         if message["type"] == "http.response.start":
@@ -120,11 +138,16 @@ async def handle_http(
 
             if not message.get("more_body", False):
                 write(writer, (conn.send(h11.EndOfMessage())))
-                finished_sending_data.set()
+                response_complete.set()
 
-        await writer.drain()
+        try:
+            await writer.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected so stop trying to send data
+            pass
 
     await app(scope, receive, send)
+    return keep_connection_open
 
 
 async def handle_websockets(
@@ -155,6 +178,7 @@ async def handle_websockets(
     async def receive() -> ASGIReceiveEvent:
         text_message_content = ""
         bytes_message_content = b""
+        close_code = 1005  # Default: No Status Received
 
         while True:
             try:
@@ -165,66 +189,94 @@ async def handle_websockets(
                         }
 
                     if isinstance(event, Ping):
-                        writer.write(ws_conn.send(event.response()))
-                        await writer.drain()
+                        try:
+                            writer.write(ws_conn.send(event.response()))
+                            await writer.drain()
+                        except (BrokenPipeError, ConnectionResetError):
+                            break
+                        continue
+
+                    if isinstance(event, CloseConnection):
+                        close_code = getattr(event, "code", 1005)
+                        reason = getattr(event, "reason", None)
+                        response = ws_conn.send(
+                            CloseConnection(code=close_code, reason=reason),
+                        )
+                        if response:
+                            try:
+                                writer.write(response)
+                                await writer.drain()
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                        return {
+                            "type": "websocket.disconnect",
+                            "code": close_code,
+                        }
 
                     if isinstance(event, TextMessage):
                         text_message_content += event.data
                         if event.message_finished:
+                            message_text = text_message_content
+                            text_message_content = ""
                             return {
                                 "type": "websocket.receive",
-                                "text": text_message_content,
+                                "text": message_text,
                             }
 
                     if isinstance(event, BytesMessage):
                         bytes_message_content += event.data
                         if event.message_finished:
+                            message_bytes = bytes_message_content
+                            bytes_message_content = b""
                             return {
                                 "type": "websocket.receive",
-                                "bytes": bytes_message_content,
+                                "bytes": message_bytes,
                             }
 
                 data = await reader.read(1024)
                 if not data:
                     break
                 ws_conn.receive_data(data)
-
-            except Exception as e:  # noqa: BLE001
-                print(f"WebSocket error: {e}")
+            except ProtocolError:
                 break
 
         return {
             "type": "websocket.disconnect",
-            # default value as per https://asgi.readthedocs.io/en/latest/specs/www.html#disconnect-receive-event-ws
-            # TODO check if we received the code from the client
-            "code": 1005,
+            "code": close_code,
         }
 
     async def send(event: ASGISendEvent) -> None:
         response = None
 
-        # TODO check that all events are handled
+        match event["type"]:
+            case "websocket.accept":
+                response = ws_conn.send(AcceptConnection())
 
-        if event["type"] == "websocket.accept":
-            response = ws_conn.send(AcceptConnection())
+            case "websocket.send":
+                if "bytes" in event and event["bytes"] is not None:
+                    response = ws_conn.send(BytesMessage(data=event["bytes"]))
+                elif "text" in event and event["text"] is not None:
+                    response = ws_conn.send(TextMessage(data=event["text"]))
 
-        if event["type"] == "websocket.send":
-            if "bytes" in event and event["bytes"]:
-                response = ws_conn.send(BytesMessage(data=event["bytes"]))
-            elif "text" in event and event["text"]:
-                response = ws_conn.send(TextMessage(data=event["text"]))
+            case "websocket.close":
+                response = ws_conn.send(
+                    CloseConnection(
+                        code=event.get("code", 1000),
+                        reason=event.get("reason"),
+                    ),
+                )
 
-        if event["type"] == "websocket.close":
-            response = ws_conn.send(
-                CloseConnection(
-                    code=event.get("code", 1000),
-                    reason=event.get("reason"),
-                ),
-            )
+            case _:
+                # Other ASGI send event types are not applicable to WebSocket connections
+                pass
 
         if response:
-            writer.write(response)
-            await writer.drain()
+            try:
+                writer.write(response)
+                await writer.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                # Client disconnected so stop trying to send data
+                pass
 
     await app(scope, receive, send)
 
@@ -243,6 +295,7 @@ async def handle_connection(
 
         is_websocket_request = False
         http_request = None
+        keep_connection_open = True
 
         # Handle HTTP requests and switching to WebSocket
         # Handle keep-alive connections
@@ -250,10 +303,17 @@ async def handle_connection(
             data = await reader.read(1024)
             if not data:  # Connection closed by client
                 break
-            conn.receive_data(data)
+            try:
+                conn.receive_data(data)
+            except h11.RemoteProtocolError:
+                break
 
             while True:
-                event = conn.next_event()
+                try:
+                    event = conn.next_event()
+                except h11.RemoteProtocolError:
+                    keep_connection_open = False
+                    break
 
                 if event is h11.NEED_DATA:
                     break
@@ -263,19 +323,28 @@ async def handle_connection(
 
                 if event is h11.PAUSED:
                     conn.start_next_cycle()
+                    continue
+
+                if isinstance(event, h11.Data | h11.EndOfMessage):
+                    # The app might not consume the whole request body.
+                    # Discarding here prevents tight loops on unread body events.
+                    continue
 
                 if isinstance(event, h11.Request):
                     http_request = event
 
-                    headers = dict(event.headers)
+                    headers = {name.lower(): value for name, value in event.headers}
+                    connection_tokens = parse_connection_tokens(
+                        headers.get(b"connection", b""),
+                    )
                     if (
-                        headers.get(b"connection", b"").lower() == b"upgrade"
+                        b"upgrade" in connection_tokens
                         and headers.get(b"upgrade", b"").lower() == b"websocket"
                     ):
                         is_websocket_request = True
                         break
 
-                    await handle_http(
+                    keep_connection_open = await handle_http(
                         app,
                         state,
                         reader,
@@ -285,6 +354,11 @@ async def handle_connection(
                         host,
                         port,
                     )
+                    if not keep_connection_open:
+                        break
+
+            if not keep_connection_open:
+                break
 
             if is_websocket_request:
                 break
@@ -305,8 +379,12 @@ async def handle_connection(
             )
 
     finally:
-        writer.close()
-        await writer.wait_closed()
+        try:
+            writer.close()
+            await asyncio.wait_for(writer.wait_closed(), timeout=1)
+        except (BrokenPipeError, ConnectionResetError, OSError, TimeoutError):
+            # Client disconnected abruptly (this is expected and harmless)
+            pass
         # client_socket.close()
 
 
@@ -322,39 +400,125 @@ async def lifespan(
     }
 
     startup_complete = asyncio.Event()
+    startup_failed = asyncio.Event()
     shutdown_started = asyncio.Event()
     shutdown_complete = asyncio.Event()
+    shutdown_failed = asyncio.Event()
+    startup_failed_message = ""
+    shutdown_failed_message = ""
 
     async def receive() -> ASGIReceiveEvent:
-        if not startup_complete.is_set():
+        if not startup_complete.is_set() and not startup_failed.is_set():
             return {"type": "lifespan.startup"}
         await shutdown_started.wait()
         return {"type": "lifespan.shutdown"}
 
     async def send(message: ASGISendEvent) -> None:
+        nonlocal shutdown_failed_message, startup_failed_message
         if message["type"] == "lifespan.startup.complete":
             startup_complete.set()
+
+        elif message["type"] == "lifespan.startup.failed":
+            startup_failed_message = message["message"]
+            startup_failed.set()
 
         elif message["type"] == "lifespan.shutdown.complete":
             shutdown_complete.set()
 
-    # Start lifespan
+        elif message["type"] == "lifespan.shutdown.failed":
+            shutdown_failed_message = message["message"]
+            shutdown_failed.set()
+            shutdown_complete.set()
+
     lifespan_task: asyncio.Task[None] = asyncio.create_task(app(scope, receive, send))
 
-    startup_complete_wait_task = asyncio.create_task(startup_complete.wait())
+    async def wait_for_lifespan_signal(*events: asyncio.Event) -> int | None:
+        waiters = [asyncio.create_task(event.wait()) for event in events]
+        try:
+            done, _ = await asyncio.wait(
+                [lifespan_task, *waiters],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.cancel()
 
-    # When one of the tasks completes, it means that the ASGI app either
-    # 1) supports the lifespan protocol and the startup is complete or
-    # 2) does not support the lifespan protocol (and did not call the receive function)
-    await asyncio.wait(
-        [lifespan_task, startup_complete_wait_task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+        if lifespan_task in done:
+            return None
 
-    yield
+        for index, waiter in enumerate(waiters):
+            if waiter in done:
+                return index
 
-    shutdown_started.set()
-    await shutdown_complete.wait()
+        error_message = "Lifespan wait completed without a signal"
+        raise RuntimeError(error_message)
+
+    async def cancel_lifespan_task() -> None:
+        if not lifespan_task.done():
+            lifespan_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await lifespan_task
+
+    def raise_lifespan_task_exception() -> None:
+        if lifespan_task.cancelled():
+            raise asyncio.CancelledError
+
+        exception = lifespan_task.exception()
+        if exception is not None:
+            raise exception
+
+    startup_result = await wait_for_lifespan_signal(startup_complete, startup_failed)
+
+    if startup_failed.is_set():
+        await cancel_lifespan_task()
+        message = startup_failed_message or "lifespan startup failed"
+        raise RuntimeError(message)
+
+    lifespan_supported = startup_result == 0
+    if startup_result is None:
+        raise_lifespan_task_exception()
+        lifespan_supported = False
+
+    body_error: BaseException | None = None
+    cancellation_requested = False
+
+    try:
+        yield
+    except BaseException as exc:  # noqa: BLE001
+        body_error = exc
+        if isinstance(exc, asyncio.CancelledError):
+            current_task = asyncio.current_task()
+            if current_task is not None:
+                current_task.uncancel()
+            cancellation_requested = True
+
+    shutdown_error: BaseException | None = None
+    if lifespan_supported:
+        shutdown_started.set()
+        shutdown_result = await wait_for_lifespan_signal(shutdown_complete)
+
+        if shutdown_failed.is_set():
+            message = shutdown_failed_message or "lifespan shutdown failed"
+            shutdown_error = RuntimeError(message)
+
+        elif shutdown_result is None:
+            if not lifespan_task.cancelled():
+                exception = lifespan_task.exception()
+                if exception is not None:
+                    shutdown_error = exception
+
+        elif not lifespan_task.done():
+            await lifespan_task
+
+    if shutdown_error:
+        raise shutdown_error
+
+    if cancellation_requested:
+        raise asyncio.CancelledError
+
+    if body_error:
+        raise body_error
 
 
 async def serve(app: ASGIApp, host: str, port: int) -> None:
