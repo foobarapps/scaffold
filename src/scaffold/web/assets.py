@@ -11,6 +11,9 @@ class Assets:
         self.file_map: dict[str, str] = {}
         self.reverse_map: dict[str, str] = {}
 
+    def _collect_files(self, static_dir: Path) -> list[Path]:
+        return [file for file in static_dir.rglob("*") if file.is_file()]
+
     async def generate_hash(self, content: bytes) -> str:
         return hashlib.md5(content).hexdigest()  # noqa: S324
 
@@ -30,11 +33,7 @@ class Assets:
     ) -> tuple[dict[str, str], dict[str, str]]:
         file_map: dict[str, str] = {}
         reverse_map: dict[str, str] = {}
-        # Recursively gather all files in subdirectories
-        files = list(
-            static_dir.rglob("*"),
-        )  # rglob('*') matches all files and folders recursively
-        files = [file for file in files if file.is_file()]  # Filter out directories
+        files = await asyncio.to_thread(self._collect_files, static_dir)
         hashed_files = await asyncio.gather(*(self.hash_file(file) for file in files))
         for original, hashed in hashed_files:
             file_map[original] = hashed
