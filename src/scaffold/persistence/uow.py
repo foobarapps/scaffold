@@ -4,18 +4,23 @@ from types import TracebackType
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-class SyncableRepository(typing.Protocol):
-    def sync(self) -> None: ...
-    def clear_identity_map(self) -> None: ...
+class UnitOfWorkRepository(typing.Protocol):
+    async def flush(self) -> None: ...
+    def clear_tracking(self) -> None: ...
+
+
+class UnitOfWorkClosedError(Exception):
+    pass
 
 
 class BaseSqlUnitOfWork:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
-        self.repositories: list[SyncableRepository] = []
+        self.repositories: list[UnitOfWorkRepository] = []
+        self._closed = False
 
-    async def __aenter__(self) -> None:
-        return
+    async def __aenter__(self) -> typing.Self:
+        return self
 
     async def __aexit__(
         self,
@@ -23,23 +28,40 @@ class BaseSqlUnitOfWork:
         exc: BaseException,
         tb: TracebackType,
     ) -> None:
-        await self.rollback()
-        await self.session.close()
+        if not self._closed:
+            await self.rollback()
+
+        await self.session.close()  # TODO use reset instead?
 
     async def commit(self) -> None:
-        # TODO close the UoW after committing so that it can't be used again?
+        self._ensure_open()
 
         for repo in self.repositories:
-            repo.sync()
+            await repo.flush()
 
         await self.session.commit()
 
-        # Clear identity maps after successful commit
         for repo in self.repositories:
-            repo.clear_identity_map()
+            repo.clear_tracking()
+
+        self._closed = True
 
     async def rollback(self) -> None:
+        self._ensure_open()
+
         await self.session.rollback()
 
-    def register_repository(self, repo: SyncableRepository) -> None:
+        for repo in self.repositories:
+            repo.clear_tracking()
+
+        self._closed = True
+
+    def register_repository(self, repo: UnitOfWorkRepository) -> None:
         self.repositories.append(repo)
+
+    def _ensure_open(self) -> None:
+        if not self._closed:
+            return
+
+        msg = "Cannot use a closed Unit of Work"
+        raise UnitOfWorkClosedError(msg)

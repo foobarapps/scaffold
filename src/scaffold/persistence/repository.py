@@ -7,8 +7,7 @@ from .uow import BaseSqlUnitOfWork
 class Mapper[E, DTO](typing.Protocol):
     def map_persistence_to_domain(self, dto: DTO) -> E: ...
 
-    # TODO rename to "map" or "apply_changes"?
-    def sync_domain_to_persistence(self, entity: E, dto: DTO | None = None) -> DTO: ...
+    def map_domain_to_persistence(self, entity: E) -> DTO: ...
 
 
 class GenericSqlRepository[E, DTO](abc.ABC):
@@ -16,41 +15,65 @@ class GenericSqlRepository[E, DTO](abc.ABC):
 
     def __init__(self, uow: BaseSqlUnitOfWork) -> None:
         self._session = uow.session
-        # Identity map tracks domain objects to their persistence counterparts.
         self._identity_map: dict[E, DTO] = {}
-        # Automatically register this repository with the UoW.
+        self._new_entities: set[E] = set()
+        self._deleted_entities: set[E] = set()
         uow.register_repository(self)
 
     @typing.final
     def add(self, entity: E, /) -> None:
-        persistence_obj = self.mapper.sync_domain_to_persistence(entity)
+        if entity in self._identity_map:
+            msg = "Cannot add an entity that is already tracked as persisted"
+            raise ValueError(msg)
 
-        self._identity_map[entity] = persistence_obj
-
-        self._session.add(persistence_obj)
+        self._new_entities.add(entity)
 
     @typing.final
     async def remove(self, entity: E, /) -> None:
-        try:
-            persistence_obj = self._identity_map.pop(entity)
-        except KeyError:
-            msg = "Entity must be tracked by the Unit of Work before removal"
-            raise ValueError(msg) from None
+        if entity in self._new_entities:
+            self._new_entities.discard(entity)
+            return
 
-        await self._session.delete(persistence_obj)
+        if entity in self._deleted_entities:
+            return
+
+        if entity not in self._identity_map:
+            msg = "Entity must be tracked by the Unit of Work before removal"
+            raise ValueError(msg)
+
+        self._deleted_entities.add(entity)
 
     @typing.final
-    def _map_persistence_to_domain_and_track(self, dto: DTO) -> E:
-        entity = self.mapper.map_persistence_to_domain(dto)
-        self._identity_map[entity] = dto
+    def _track(self, entity: E, persistence_obj: DTO) -> E:
+        self._identity_map[entity] = persistence_obj
         return entity
 
     @typing.final
-    def sync(self) -> None:
-        for domain_obj, persistence_obj in self._identity_map.items():
-            self.mapper.sync_domain_to_persistence(domain_obj, persistence_obj)
+    async def flush(self) -> None:
+        for entity in self._new_entities:
+            self._session.add(self.mapper.map_domain_to_persistence(entity))
+
+        for entity in self._identity_map:
+            if entity in self._deleted_entities:
+                continue
+
+            await self._session.merge(self.mapper.map_domain_to_persistence(entity))
+
+        for entity in self._deleted_entities:
+            persistence_obj = self._identity_map.get(entity)
+
+            if persistence_obj is None:
+                msg = "Entity must exist in the database before removal"
+                raise ValueError(msg)
+
+            await self._session.delete(persistence_obj)
 
     @typing.final
-    def clear_identity_map(self) -> None:
-        """Clear the identity map after a successful commit."""
+    def clear_tracking(self) -> None:
         self._identity_map.clear()
+        self._new_entities.clear()
+        self._deleted_entities.clear()
+
+    @typing.final
+    def _map_persistence_to_domain(self, dto: DTO) -> E:
+        return self._track(self.mapper.map_persistence_to_domain(dto), dto)
