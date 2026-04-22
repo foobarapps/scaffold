@@ -1,6 +1,6 @@
 import inspect
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from functools import wraps
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
@@ -126,7 +126,7 @@ class BaseWebApp:
         extension.init_app(self)
 
     @property
-    def config(self) -> Mapping[str, Any]:
+    def config(self) -> MutableMapping[str, Any]:
         return self.__app.config
 
     @property

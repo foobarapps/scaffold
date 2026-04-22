@@ -1,20 +1,45 @@
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol, cast
 
 from quart import (
-    Request,
+    # Request,
     Websocket,
     flash,
     redirect,
     render_template,
     request,
+    send_file,  # type: ignore
     session,
     url_for,
     websocket,
 )
 from quart.sessions import SessionMixin
 from quart.typing import ResponseValue
+from werkzeug.datastructures import Headers, ImmutableMultiDict, MIMEAccept, MultiDict
 
 # TODO define its own protocols for the return values so that it's not leaking Quart types
+
+
+class Request(Protocol):
+    @property
+    def method(self) -> str: ...
+
+    @property
+    async def form(self) -> MultiDict[str, str]: ...
+
+    @property
+    def args(self) -> MultiDict[str, str]: ...
+
+    @property
+    def view_args(self) -> dict[str, Any]: ...
+
+    @property
+    def cookies(self) -> ImmutableMultiDict[str, str]: ...
+
+    @property
+    def headers(self) -> Headers: ...
+
+    @property
+    def accept_mimetypes(self) -> MIMEAccept: ...
 
 
 class BaseController:
@@ -35,7 +60,7 @@ class BaseController:
 
     @property
     def request(self) -> Request:
-        return request
+        return cast(Request, request)
 
     @property
     def session(self) -> SessionMixin:
@@ -44,6 +69,9 @@ class BaseController:
     @property
     def websocket(self) -> Websocket:
         return websocket
+
+    async def send_file(self, filename: str, mimetype: str) -> ResponseValue:
+        return await send_file(filename, mimetype)
 
     @staticmethod
     async def render_template(
