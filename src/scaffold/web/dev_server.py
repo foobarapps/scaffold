@@ -19,7 +19,7 @@ from typing import Any
 import h11
 from watchfiles import awatch  # type: ignore[import-untyped]
 from wsproto import WSConnection
-from wsproto.connection import ConnectionType
+from wsproto.connection import ConnectionState, ConnectionType
 from wsproto.events import (
     AcceptConnection,
     BytesMessage,
@@ -259,12 +259,17 @@ async def handle_websockets(
                     response = ws_conn.send(TextMessage(data=event["text"]))
 
             case "websocket.close":
-                response = ws_conn.send(
-                    CloseConnection(
-                        code=event.get("code", 1000),
-                        reason=event.get("reason"),
-                    ),
-                )
+                if ws_conn.state not in {
+                    ConnectionState.REMOTE_CLOSING,
+                    ConnectionState.LOCAL_CLOSING,
+                    ConnectionState.CLOSED,
+                }:
+                    response = ws_conn.send(
+                        CloseConnection(
+                            code=event.get("code", 1000),
+                            reason=event.get("reason"),
+                        ),
+                    )
 
             case _:
                 # Other ASGI send event types are not applicable to WebSocket connections
