@@ -101,10 +101,11 @@ async def handle_http(
         "state": state,
     }
     response_complete = asyncio.Event()
+    client_disconnected = False
     keep_connection_open = True
 
     async def receive() -> ASGIReceiveEvent:
-        nonlocal keep_connection_open
+        nonlocal client_disconnected, keep_connection_open
         while True:
             if response_complete.is_set():
                 return {"type": "http.disconnect"}
@@ -135,19 +136,23 @@ async def handle_http(
                     )
                 data = await read_from_peer(reader)
                 if not data:
+                    client_disconnected = True
                     keep_connection_open = False
                     return {"type": "http.disconnect"}
                 try:
                     conn.receive_data(data)
                 except h11.RemoteProtocolError:
+                    client_disconnected = True
                     keep_connection_open = False
                     return {"type": "http.disconnect"}
                 continue
 
+            client_disconnected = True
             keep_connection_open = False
             return {"type": "http.disconnect"}
 
     async def send(message: ASGISendEvent) -> None:
+        nonlocal client_disconnected, keep_connection_open
         if message["type"] == "http.response.start":
             response = h11.Response(
                 status_code=message["status"],
@@ -166,9 +171,17 @@ async def handle_http(
             await writer.drain()
         except (BrokenPipeError, ConnectionResetError):
             # Client disconnected so stop trying to send data
+            client_disconnected = True
+            keep_connection_open = False
             pass
 
-    await app(scope, receive, send)
+    try:
+        await app(scope, receive, send)
+    except asyncio.CancelledError:
+        if client_disconnected:
+            keep_connection_open = False
+            return keep_connection_open
+        raise
     return keep_connection_open
 
 
@@ -196,8 +209,10 @@ async def handle_websockets(
         "server": (host, port),
         "state": state,
     }
+    client_disconnected = False
 
     async def receive() -> ASGIReceiveEvent:
+        nonlocal client_disconnected
         text_message_content = ""
         bytes_message_content = b""
         close_code = 1005  # Default: No Status Received
@@ -215,10 +230,12 @@ async def handle_websockets(
                             writer.write(ws_conn.send(event.response()))
                             await writer.drain()
                         except (BrokenPipeError, ConnectionResetError):
+                            client_disconnected = True
                             break
                         continue
 
                     if isinstance(event, CloseConnection):
+                        client_disconnected = True
                         close_code = getattr(event, "code", 1005)
                         reason = getattr(event, "reason", None)
                         response = ws_conn.send(
@@ -257,9 +274,11 @@ async def handle_websockets(
 
                 data = await read_from_peer(reader)
                 if not data:
+                    client_disconnected = True
                     break
                 ws_conn.receive_data(data)
             except ProtocolError:
+                client_disconnected = True
                 break
 
         return {
@@ -268,6 +287,7 @@ async def handle_websockets(
         }
 
     async def send(event: ASGISendEvent) -> None:
+        nonlocal client_disconnected
         response = None
 
         match event["type"]:
@@ -303,9 +323,15 @@ async def handle_websockets(
                 await writer.drain()
             except (BrokenPipeError, ConnectionResetError):
                 # Client disconnected so stop trying to send data
+                client_disconnected = True
                 pass
 
-    await app(scope, receive, send)
+    try:
+        await app(scope, receive, send)
+    except asyncio.CancelledError:
+        if client_disconnected:
+            return
+        raise
 
 
 async def handle_connection(
