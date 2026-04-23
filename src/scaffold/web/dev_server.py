@@ -6,6 +6,7 @@ It supports HTTP/1.1 and WebSockets.
 import argparse
 import asyncio
 import copy
+import errno
 import importlib
 import os
 import signal
@@ -50,6 +51,27 @@ def parse_connection_tokens(header_value: bytes) -> set[bytes]:
     return {
         token.strip().lower() for token in header_value.split(b",") if token.strip()
     }
+
+
+PEER_DISCONNECT_ERRNOS = {
+    errno.EPIPE,
+    errno.ECONNABORTED,
+    errno.ECONNRESET,
+    errno.ENOTCONN,
+}
+
+
+def is_peer_disconnect_error(exc: OSError) -> bool:
+    return exc.errno in PEER_DISCONNECT_ERRNOS
+
+
+async def read_from_peer(reader: asyncio.StreamReader, size: int = 1024) -> bytes:
+    try:
+        return await reader.read(size)
+    except OSError as exc:
+        if is_peer_disconnect_error(exc):
+            return b""
+        raise
 
 
 async def handle_http(
@@ -111,7 +133,7 @@ async def handle_http(
                             h11.InformationalResponse(status_code=100, headers=[]),
                         ),
                     )
-                data = await reader.read(1024)
+                data = await read_from_peer(reader)
                 if not data:
                     keep_connection_open = False
                     return {"type": "http.disconnect"}
@@ -233,7 +255,7 @@ async def handle_websockets(
                                 "bytes": message_bytes,
                             }
 
-                data = await reader.read(1024)
+                data = await read_from_peer(reader)
                 if not data:
                     break
                 ws_conn.receive_data(data)
@@ -305,7 +327,7 @@ async def handle_connection(
         # Handle HTTP requests and switching to WebSocket
         # Handle keep-alive connections
         while True:
-            data = await reader.read(1024)
+            data = await read_from_peer(reader)
             if not data:  # Connection closed by client
                 break
             try:
