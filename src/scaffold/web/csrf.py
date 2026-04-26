@@ -27,12 +27,8 @@ class CSRFProtect:
         self._exempt_views: set[str] = set()
 
     def init_app(self, app: BaseWebApp) -> None:
-        app.context_processor(
-            lambda: {
-                "csrf_token": generate_csrf_token,
-                "csrf_input": generate_csrf_input,
-            },
-        )
+        app.jinja_env.globals["csrf_token"] = generate_csrf_token # type: ignore[reportUnknownVariableType]
+        app.jinja_env.globals["csrf_input"] = generate_csrf_input # type: ignore[reportUnknownVariableType]
         app.before_request(self.protect)
 
     async def protect(self) -> None:
