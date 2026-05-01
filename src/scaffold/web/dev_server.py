@@ -651,6 +651,21 @@ def get_worker_cmd() -> list[str]:
     return cmd
 
 
+def build_worker_env(socket_fd: int) -> dict[str, str]:
+    env = os.environ.copy()
+    env["SOCKET_FD"] = str(socket_fd)
+
+    pythonpath_entries = [path for path in sys.path if path]
+    existing_pythonpath = env.get("PYTHONPATH")
+    if existing_pythonpath:
+        pythonpath_entries.extend(existing_pythonpath.split(os.pathsep))
+
+    if pythonpath_entries:
+        env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath_entries))
+
+    return env
+
+
 def create_socket(host: str, port: int) -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -680,13 +695,10 @@ async def run_reloader(host: str, port: int) -> None:
             process.terminate()
             await process.wait()
 
-        env = os.environ.copy()
-        env["SOCKET_FD"] = str(sock.fileno())
-
         command = get_worker_cmd()
         process = await asyncio.create_subprocess_exec(
             *command,
-            env=env,
+            env=build_worker_env(sock.fileno()),
             pass_fds=(sock.fileno(),),
         )
 
