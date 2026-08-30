@@ -351,7 +351,7 @@ class BaseWebApp:
             type[BaseController],
             list[type[BaseController]],
         ] = {}
-        for controller_class in self.__controller_factories.keys():
+        for controller_class in self.__controller_factories:
             parents = [
                 base
                 for base in controller_class.__bases__

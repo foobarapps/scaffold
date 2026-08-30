@@ -173,7 +173,6 @@ async def handle_http(
             # Client disconnected so stop trying to send data
             client_disconnected = True
             keep_connection_open = False
-            pass
 
     try:
         await app(scope, receive, send)
@@ -324,7 +323,6 @@ async def handle_websockets(
             except (BrokenPipeError, ConnectionResetError):
                 # Client disconnected so stop trying to send data
                 client_disconnected = True
-                pass
 
     try:
         await app(scope, receive, send)

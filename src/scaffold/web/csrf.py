@@ -1,7 +1,7 @@
 import hmac
 import secrets
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from hashlib import sha1
 
 from markupsafe import Markup, escape
@@ -80,7 +80,7 @@ def generate_csrf_token() -> str:
     expires = (
         ""
         if time_limit is None
-        else (datetime.now() + time_limit).strftime(CSRF_TIME_FORMAT)
+        else (datetime.now(UTC) + time_limit).strftime(CSRF_TIME_FORMAT)
     )
     signature = _sign_token(raw_token, expires)
     return f"{expires}##{signature}"
@@ -109,7 +109,7 @@ def validate_csrf_token(token: str | None) -> None:
         msg = "CSRF failed."
         raise CSRFError(msg)
 
-    if expires and datetime.now().strftime(CSRF_TIME_FORMAT) > expires:
+    if expires and datetime.now(UTC).strftime(CSRF_TIME_FORMAT) > expires:
         msg = "CSRF token expired."
         raise CSRFError(msg)
 

@@ -4,7 +4,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 
 class ASGIVersions(TypedDict, total=False):
     spec_version: str
-    version: Literal["2.0"] | Literal["3.0"]
+    version: Literal["2.0", "3.0"]
 
 
 type LifespanState = dict[str, Any]

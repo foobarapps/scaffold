@@ -24,9 +24,9 @@ class BaseSqlUnitOfWork:
 
     async def __aexit__(
         self,
-        exc_type: type,
-        exc: BaseException,
-        tb: TracebackType,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
     ) -> None:
         if not self._closed:
             await self.rollback()

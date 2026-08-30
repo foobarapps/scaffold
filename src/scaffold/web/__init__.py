@@ -24,8 +24,8 @@ from .decorators import (
 )
 
 __all__ = [
-    "BaseWebApp",
     "BaseController",
+    "BaseWebApp",
     "CSRFError",
     "CSRFProtect",
     "after_request",
