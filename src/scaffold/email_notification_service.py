@@ -2,6 +2,7 @@ import abc
 import dataclasses
 import inspect
 import pathlib
+from collections.abc import Mapping
 from functools import partial
 from typing import Any
 
@@ -18,6 +19,8 @@ class Message:
     sender: str
     body: str
     html: str | None = None
+    reply_to: str | None = None
+    headers: Mapping[str, str] | None = None
 
 
 class MailSender(abc.ABC):
@@ -26,7 +29,8 @@ class MailSender(abc.ABC):
         self,
         message: Message,
         /,
-    ) -> None:
+    ) -> str:
+        """Send the message and return the Message-ID header value it was sent with."""
         raise NotImplementedError
 
 
