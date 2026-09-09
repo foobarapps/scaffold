@@ -7,14 +7,14 @@ import os
 import subprocess
 import sys
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import Any, Protocol
 
 import psycopg
 import pytest
 import pytest_asyncio
-from psycopg import sql
-from psycopg.rows import dict_row
+from psycopg import AsyncConnection, sql
+from psycopg.rows import TupleRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from scaffold.task_queue import PostgresTaskQueue, migrations
@@ -35,11 +35,11 @@ class QueueFactory(Protocol):
 @pytest_asyncio.fixture
 async def queue_factory(postgres_dsn: str, schema_name: str) -> AsyncIterator[QueueFactory]:
     """Builds queues that all share this test's schema, and closes their pools afterwards."""
-    pools: list[AsyncConnectionPool] = []
+    pools: list[AsyncConnectionPool[AsyncConnection[TupleRow]]] = []
     notify_channel_name = f"task_queue_notifications_{uuid.uuid4().hex}"
 
     async def make(**kwargs: Any) -> PostgresTaskQueue[ExampleTask]:  # noqa: ANN401
-        pool = AsyncConnectionPool(postgres_dsn, open=False)
+        pool = make_pool(postgres_dsn)
         pools.append(pool)
         queue = PostgresTaskQueue[ExampleTask](
             pool,
@@ -60,7 +60,7 @@ async def queue_factory(postgres_dsn: str, schema_name: str) -> AsyncIterator[Qu
 
 
 @contextlib.asynccontextmanager
-async def running_worker(queue: PostgresTaskQueue[ExampleTask]) -> AsyncIterator[asyncio.Task[None]]:
+async def running_worker(queue: PostgresTaskQueue[ExampleTask]) -> AsyncGenerator[asyncio.Task[None]]:
     """Runs `handle_tasks()` in the background and tears it down on the way out."""
     worker = asyncio.create_task(queue.handle_tasks())
     try:
@@ -107,6 +107,11 @@ async def fetch_all(dsn: str, statement: sql.Composed) -> list[dict[str, Any]]:
         cursor = conn.cursor(row_factory=dict_row)
         cursor = await cursor.execute(statement)
         return await cursor.fetchall()
+
+
+def make_pool(dsn: str) -> AsyncConnectionPool[AsyncConnection[TupleRow]]:
+    """psycopg_pool is generic and invariant, so the row type has to be named explicitly."""
+    return AsyncConnectionPool[AsyncConnection[TupleRow]](dsn, open=False)
 
 
 def table(schema_name: str, name: str = "task") -> sql.Identifier:
@@ -310,7 +315,7 @@ async def test_upgrade_installs_the_schema_and_records_the_version(
     postgres_dsn: str,
     schema_name: str,
 ) -> None:
-    async with AsyncConnectionPool(postgres_dsn, open=False) as pool:
+    async with make_pool(postgres_dsn) as pool:
         await pool.open()
         assert await migrations.current_version(pool, schema_name=schema_name) == 0
 
@@ -372,7 +377,7 @@ async def test_upgrade_stamps_and_migrates_a_pre_versioning_schema(
         )
         await conn.commit()
 
-    async with AsyncConnectionPool(postgres_dsn, open=False) as pool:
+    async with make_pool(postgres_dsn) as pool:
         await pool.open()
         # Detected as the baseline rather than reported as an empty database.
         assert await migrations.current_version(pool, schema_name=schema_name) == 1
@@ -402,7 +407,7 @@ async def test_concurrent_upgrades_do_not_race(postgres_dsn: str, schema_name: s
     fail on Postgres' catalogue unique indexes, which those statements do not guard.
     """
     worker_count = 8
-    pools = [AsyncConnectionPool(postgres_dsn, open=False) for _ in range(worker_count)]
+    pools = [make_pool(postgres_dsn) for _ in range(worker_count)]
     try:
         await asyncio.gather(*(pool.open() for pool in pools))
         results = await asyncio.gather(
@@ -428,7 +433,7 @@ async def test_init_refuses_to_start_against_an_unmigrated_schema(
     postgres_dsn: str,
     schema_name: str,
 ) -> None:
-    async with AsyncConnectionPool(postgres_dsn, open=False) as pool:
+    async with make_pool(postgres_dsn) as pool:
         queue = PostgresTaskQueue[ExampleTask](pool, schema_name=schema_name)
 
         with pytest.raises(migrations.SchemaVersionMismatchError) as excinfo:
@@ -458,6 +463,6 @@ async def test_cli_upgrade_installs_the_schema(postgres_dsn: str, schema_name: s
 
     assert str(migrations.LATEST_VERSION) in output
 
-    async with AsyncConnectionPool(postgres_dsn, open=False) as pool:
+    async with make_pool(postgres_dsn) as pool:
         queue = PostgresTaskQueue[ExampleTask](pool, schema_name=schema_name)
         await queue.init()  # Raises unless the CLI produced the version this build expects.
