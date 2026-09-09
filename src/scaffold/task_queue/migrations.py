@@ -19,6 +19,7 @@ import os
 from collections.abc import Callable, Sequence
 
 from psycopg import AsyncConnection, sql
+from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
 
@@ -217,7 +218,7 @@ async def upgrade(
 
 
 async def _run_upgrade(dsn: str, schema_name: str, table_name: str) -> int:
-    async with AsyncConnectionPool(dsn, open=False) as pool:
+    async with AsyncConnectionPool[AsyncConnection[TupleRow]](dsn, open=False) as pool:
         await pool.open()
         return await upgrade(pool, schema_name=schema_name, table_name=table_name)
 
