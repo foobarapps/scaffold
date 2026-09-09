@@ -42,6 +42,7 @@ dev = [
     "ruff>=0.8.0",
     "black>=24.10.0",
     "pyright>=1.1.403",
+    "testcontainers>=4.15.0",
 ]
 
 [tool.pytest.ini_options]
