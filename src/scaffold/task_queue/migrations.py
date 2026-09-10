@@ -74,11 +74,19 @@ def _create_task_table(names: _Names) -> list[sql.Composed]:
 
 def _add_retries_and_dead_lettering(names: _Names) -> list[sql.Composed]:
     return [
-        sql.SQL("ALTER TABLE {task} ADD COLUMN run_at TIMESTAMP").format(task=names.task),
+        sql.SQL("ALTER TABLE {task} ADD COLUMN run_at TIMESTAMP").format(
+            task=names.task,
+        ),
         sql.SQL("UPDATE {task} SET run_at = enqueued_at").format(task=names.task),
-        sql.SQL("ALTER TABLE {task} ALTER COLUMN run_at SET NOT NULL").format(task=names.task),
-        sql.SQL("ALTER TABLE {task} ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0").format(task=names.task),
-        sql.SQL("CREATE INDEX {index} ON {task} (run_at) WHERE acknowledged_at IS NULL").format(
+        sql.SQL("ALTER TABLE {task} ALTER COLUMN run_at SET NOT NULL").format(
+            task=names.task,
+        ),
+        sql.SQL(
+            "ALTER TABLE {task} ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+        ).format(task=names.task),
+        sql.SQL(
+            "CREATE INDEX {index} ON {task} (run_at) WHERE acknowledged_at IS NULL",
+        ).format(
             index=names.pending_index,
             task=names.task,
         ),
@@ -130,7 +138,9 @@ def _advisory_lock(names: _Names) -> sql.Composed:
     # IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS` can fail on Postgres' own catalogue
     # unique indexes, which those statements do not protect against.
     key = f"scaffold.task_queue.{names.schema_name}.{names.table_name}"
-    return sql.SQL("SELECT pg_advisory_xact_lock(hashtext({key}))").format(key=sql.Literal(key))
+    return sql.SQL("SELECT pg_advisory_xact_lock(hashtext({key}))").format(
+        key=sql.Literal(key),
+    )
 
 
 def _table_exists(schema_name: str, table_name: str) -> sql.Composed:
@@ -151,7 +161,9 @@ async def _read_version(conn: AsyncConnection, names: _Names) -> int:
     if await _scalar(conn, _table_exists(names.schema_name, names.version_table_name)):
         recorded = await _scalar(
             conn,
-            sql.SQL("SELECT COALESCE(MAX(version), 0) FROM {version}").format(version=names.version),
+            sql.SQL("SELECT COALESCE(MAX(version), 0) FROM {version}").format(
+                version=names.version,
+            ),
         )
         assert isinstance(recorded, int)
         if recorded > 0:
@@ -206,7 +218,9 @@ async def upgrade(
             for statement in build(names):
                 await conn.execute(statement)
             await conn.execute(
-                sql.SQL("INSERT INTO {version} (version, applied_at) VALUES ({value}, NOW())").format(
+                sql.SQL(
+                    "INSERT INTO {version} (version, applied_at) VALUES ({value}, NOW())",
+                ).format(
                     version=names.version,
                     value=sql.Literal(pending),
                 ),
@@ -229,8 +243,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         description="Apply pending PostgresTaskQueue schema migrations.",
     )
     parser.add_argument("command", choices=["upgrade"])
-    parser.add_argument("--schema", default="public", help="schema holding the queue (default: public)")
-    parser.add_argument("--table", default="task", help="name of the task table (default: task)")
+    parser.add_argument(
+        "--schema",
+        default="public",
+        help="schema holding the queue (default: public)",
+    )
+    parser.add_argument(
+        "--table",
+        default="task",
+        help="name of the task table (default: task)",
+    )
     args = parser.parse_args(argv)
 
     dsn = os.environ.get("DATABASE_URL")

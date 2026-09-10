@@ -48,9 +48,7 @@ def write(writer: asyncio.StreamWriter, data: bytes | None) -> None:
 
 
 def parse_connection_tokens(header_value: bytes) -> set[bytes]:
-    return {
-        token.strip().lower() for token in header_value.split(b",") if token.strip()
-    }
+    return {token.strip().lower() for token in header_value.split(b",") if token.strip()}
 
 
 PEER_DISCONNECT_ERRNOS = {
@@ -388,10 +386,7 @@ async def handle_connection(
                     connection_tokens = parse_connection_tokens(
                         headers.get(b"connection", b""),
                     )
-                    if (
-                        b"upgrade" in connection_tokens
-                        and headers.get(b"upgrade", b"").lower() == b"websocket"
-                    ):
+                    if b"upgrade" in connection_tokens and headers.get(b"upgrade", b"").lower() == b"websocket":
                         is_websocket_request = True
                         break
 
