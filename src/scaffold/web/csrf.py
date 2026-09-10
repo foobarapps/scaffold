@@ -27,8 +27,8 @@ class CSRFProtect:
         self._exempt_views: set[str] = set()
 
     def init_app(self, app: BaseWebApp) -> None:
-        app.jinja_env.globals["csrf_token"] = generate_csrf_token # type: ignore[reportUnknownVariableType]
-        app.jinja_env.globals["csrf_input"] = generate_csrf_input # type: ignore[reportUnknownVariableType]
+        app.jinja_env.globals["csrf_token"] = generate_csrf_token  # type: ignore[reportUnknownVariableType]
+        app.jinja_env.globals["csrf_input"] = generate_csrf_input  # type: ignore[reportUnknownVariableType]
         app.before_request(self.protect)
 
     async def protect(self) -> None:
@@ -77,11 +77,7 @@ def csrf_exempt[F: ViewFunction](view: F) -> F:
 def generate_csrf_token() -> str:
     raw_token = _get_or_create_session_token()
     time_limit = _get_csrf_time_limit()
-    expires = (
-        ""
-        if time_limit is None
-        else (datetime.now(UTC) + time_limit).strftime(CSRF_TIME_FORMAT)
-    )
+    expires = "" if time_limit is None else (datetime.now(UTC) + time_limit).strftime(CSRF_TIME_FORMAT)
     signature = _sign_token(raw_token, expires)
     return f"{expires}##{signature}"
 

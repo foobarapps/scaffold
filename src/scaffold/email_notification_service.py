@@ -2,7 +2,7 @@ import abc
 import dataclasses
 import inspect
 import pathlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import partial
 from typing import Any
 
@@ -10,6 +10,15 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from quart import url_for
 
 from scaffold.web.base_app import BaseWebApp
+
+
+@dataclasses.dataclass
+class Attachment:
+    file_name: str
+    # Taken as-is from whatever produced the file, so it may be malformed; the mail sender
+    # falls back to application/octet-stream rather than putting a broken type on the wire.
+    content_type: str
+    content: bytes
 
 
 @dataclasses.dataclass
@@ -21,6 +30,9 @@ class Message:
     html: str | None = None
     reply_to: str | None = None
     headers: Mapping[str, str] | None = None
+    # Last, so that existing positional construction keeps working. The empty tuple is
+    # immutable, so it needs no default_factory.
+    attachments: Sequence[Attachment] = ()
 
 
 class MailSender(abc.ABC):

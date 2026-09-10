@@ -33,7 +33,10 @@ class QueueFactory(Protocol):
 
 
 @pytest_asyncio.fixture
-async def queue_factory(postgres_dsn: str, schema_name: str) -> AsyncIterator[QueueFactory]:
+async def queue_factory(
+    postgres_dsn: str,
+    schema_name: str,
+) -> AsyncIterator[QueueFactory]:
     """Builds queues that all share this test's schema, and closes their pools afterwards."""
     pools: list[AsyncConnectionPool[AsyncConnection[TupleRow]]] = []
     notify_channel_name = f"task_queue_notifications_{uuid.uuid4().hex}"
@@ -60,7 +63,9 @@ async def queue_factory(postgres_dsn: str, schema_name: str) -> AsyncIterator[Qu
 
 
 @contextlib.asynccontextmanager
-async def running_worker(queue: PostgresTaskQueue[ExampleTask]) -> AsyncGenerator[asyncio.Task[None]]:
+async def running_worker(
+    queue: PostgresTaskQueue[ExampleTask],
+) -> AsyncGenerator[asyncio.Task[None]]:
     """Runs `handle_tasks()` in the background and tears it down on the way out."""
     worker = asyncio.create_task(queue.handle_tasks())
     try:
@@ -209,7 +214,9 @@ async def test_task_is_dead_lettered_after_max_attempts(
     async def is_dead_lettered() -> bool:
         rows = await fetch_all(
             postgres_dsn,
-            sql.SQL("SELECT * FROM {failures}").format(failures=table(schema_name, "task_failure")),
+            sql.SQL("SELECT * FROM {failures}").format(
+                failures=table(schema_name, "task_failure"),
+            ),
         )
         return bool(rows)
 
@@ -222,7 +229,9 @@ async def test_task_is_dead_lettered_after_max_attempts(
 
     failures = await fetch_all(
         postgres_dsn,
-        sql.SQL("SELECT * FROM {failures}").format(failures=table(schema_name, "task_failure")),
+        sql.SQL("SELECT * FROM {failures}").format(
+            failures=table(schema_name, "task_failure"),
+        ),
     )
     assert len(failures) == 1
     failure = failures[0]
@@ -266,7 +275,10 @@ async def test_concurrent_workers_never_handle_the_same_task(
     queue_b.register(ExampleTask, handler_factory(handle_as("b")))
 
     for index in range(task_count):
-        await queue_a.enqueue(ExampleTask(payload=f"task-{index}"), visibility_timeout=600)
+        await queue_a.enqueue(
+            ExampleTask(payload=f"task-{index}"),
+            visibility_timeout=600,
+        )
 
     async with running_worker(queue_a), running_worker(queue_b):
         await eventually(
@@ -298,11 +310,17 @@ async def test_scheduled_task_is_not_dequeued_before_its_run_at(
     queue.register(ExampleTask, handler_factory(handle))
 
     now = datetime.datetime.now(datetime.UTC)
-    await queue.enqueue(ExampleTask(payload="later"), run_at=now + datetime.timedelta(seconds=3))
+    await queue.enqueue(
+        ExampleTask(payload="later"),
+        run_at=now + datetime.timedelta(seconds=3),
+    )
     await queue.enqueue(ExampleTask(payload="now"))
 
     async with running_worker(queue):
-        await eventually(lambda: "now" in handled, message="the due task was not handled")
+        await eventually(
+            lambda: "now" in handled,
+            message="the due task was not handled",
+        )
         assert "later" not in handled, "a task scheduled for the future was handled early"
         await eventually(
             lambda: "later" in handled,
@@ -345,7 +363,9 @@ async def test_upgrade_stamps_and_migrates_a_pre_versioning_schema(
 
     async with await psycopg.AsyncConnection.connect(postgres_dsn) as conn:
         await conn.execute(
-            sql.SQL("CREATE SCHEMA {schema}").format(schema=sql.Identifier(schema_name)),
+            sql.SQL("CREATE SCHEMA {schema}").format(
+                schema=sql.Identifier(schema_name),
+            ),
         )
         await conn.execute(
             sql.SQL("""\
@@ -385,7 +405,9 @@ async def test_upgrade_stamps_and_migrates_a_pre_versioning_schema(
 
     rows = await fetch_all(
         postgres_dsn,
-        sql.SQL("SELECT run_at, attempts FROM {tasks}").format(tasks=table(schema_name)),
+        sql.SQL("SELECT run_at, attempts FROM {tasks}").format(
+            tasks=table(schema_name),
+        ),
     )
     assert rows[0]["run_at"] == enqueued_at, "run_at was not backfilled from enqueued_at"
     assert rows[0]["attempts"] == 0
@@ -400,7 +422,10 @@ async def test_upgrade_stamps_and_migrates_a_pre_versioning_schema(
 
 
 @pytest.mark.asyncio
-async def test_concurrent_upgrades_do_not_race(postgres_dsn: str, schema_name: str) -> None:
+async def test_concurrent_upgrades_do_not_race(
+    postgres_dsn: str,
+    schema_name: str,
+) -> None:
     """The advisory lock has to serialise deployments starting at the same moment.
 
     Without it, concurrent `CREATE SCHEMA IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS` can
@@ -458,7 +483,10 @@ def _run_cli(dsn: str, *args: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_cli_upgrade_installs_the_schema(postgres_dsn: str, schema_name: str) -> None:
+async def test_cli_upgrade_installs_the_schema(
+    postgres_dsn: str,
+    schema_name: str,
+) -> None:
     output = _run_cli(postgres_dsn, "--schema", schema_name, "upgrade")
 
     assert str(migrations.LATEST_VERSION) in output

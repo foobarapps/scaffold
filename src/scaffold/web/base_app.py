@@ -218,13 +218,9 @@ class BaseWebApp:
         request_or_websocket: Request | Websocket,
     ) -> None:
         if request_or_websocket.endpoint is not None:
-            blueprint_full_name = request_or_websocket.endpoint.rsplit(".", maxsplit=1)[
-                0
-            ]
+            blueprint_full_name = request_or_websocket.endpoint.rsplit(".", maxsplit=1)[0]
             if blueprint_full_name in self.__endpoint_to_controller_class:
-                controller_class = self.__endpoint_to_controller_class[
-                    blueprint_full_name
-                ]
+                controller_class = self.__endpoint_to_controller_class[blueprint_full_name]
                 g.controller = self.__controller_factories[controller_class]()
 
     def __create_blueprint(
@@ -250,8 +246,7 @@ class BaseWebApp:
         **P,
         R,
     ](
-        func: Callable[Concatenate[S, P], R]
-        | Callable[Concatenate[S, P], Awaitable[R]],
+        func: Callable[Concatenate[S, P], R] | Callable[Concatenate[S, P], Awaitable[R]],
     ) -> Callable[P, R] | Callable[P, Awaitable[R]]:
         if inspect.iscoroutinefunction(func):
 
@@ -274,8 +269,7 @@ class BaseWebApp:
     ) -> None:
         for view_function_name, view_function in inspect.getmembers(
             controller_class,
-            predicate=lambda member: inspect.isfunction(member)
-            and isinstance(member, RouteFunction),  # pyright: ignore[reportUnnecessaryIsInstance]
+            predicate=lambda member: inspect.isfunction(member) and isinstance(member, RouteFunction),  # pyright: ignore[reportUnnecessaryIsInstance]
         ):
             rule, options = view_function.route
 

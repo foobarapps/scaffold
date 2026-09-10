@@ -66,7 +66,10 @@ class PostgresTaskQueue[T]:
             table_name=self._table_name,
         )
         if version != migrations.LATEST_VERSION:
-            raise migrations.SchemaVersionMismatchError(version, migrations.LATEST_VERSION)
+            raise migrations.SchemaVersionMismatchError(
+                version,
+                migrations.LATEST_VERSION,
+            )
 
     async def enqueue(
         self,
@@ -131,7 +134,11 @@ class PostgresTaskQueue[T]:
             if error is None:
                 await self.ack(task_id)
             else:
-                logger.error("Task %s failed, scheduling a retry", task_id, exc_info=error)
+                logger.error(
+                    "Task %s failed, scheduling a retry",
+                    task_id,
+                    exc_info=error,
+                )
                 await self._fail_task(task_id, error)
         except Exception:
             # Recording the outcome failed (an unreachable database, say). Leave the task
