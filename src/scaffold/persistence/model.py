@@ -31,7 +31,8 @@ class TimestampMixin(MappedAsDataclass):
         init=False,
         nullable=False,
         server_default=sa.func.timezone("UTC", sa.func.now()),
-        onupdate=datetime.datetime.now(datetime.UTC),
+        # A SQL expression, so the database stamps each update when it runs it, the same way as the default.
+        onupdate=sa.func.timezone("UTC", sa.func.now()),
     )
 
 
