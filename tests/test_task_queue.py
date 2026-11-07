@@ -359,7 +359,7 @@ async def test_upgrade_stamps_and_migrates_a_pre_versioning_schema(
     schema_name: str,
 ) -> None:
     """A database created by the old `init()` has the v1 table but no version table."""
-    enqueued_at = datetime.datetime(2026, 1, 1, 12, 0, 0)  # noqa: DTZ001
+    enqueued_at = datetime.datetime(2026, 1, 1, 12, 0, 0)
 
     async with await psycopg.AsyncConnection.connect(postgres_dsn) as conn:
         await conn.execute(
