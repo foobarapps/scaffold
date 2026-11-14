@@ -41,6 +41,16 @@ def before_serving[**P, R](f: Callable[P, R]) -> Callable[P, R]:
     return f
 
 
+def after_serving[**P, R](f: Callable[P, R]) -> Callable[P, R]:
+    setattr(f, "is_after_serving_callback", True)
+    return f
+
+
+def while_serving[**P, R](f: Callable[P, R]) -> Callable[P, R]:
+    setattr(f, "is_while_serving_callback", True)
+    return f
+
+
 def before_request[**P, R](f: Callable[P, R]) -> Callable[P, R]:
     setattr(f, "is_before_request_callback", True)
     return f
