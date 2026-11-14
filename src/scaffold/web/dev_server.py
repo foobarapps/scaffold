@@ -26,6 +26,7 @@ from wsproto.events import (
     BytesMessage,
     CloseConnection,
     Ping,
+    RejectConnection,
     Request,
     TextMessage,
 )
@@ -298,7 +299,12 @@ async def handle_websockets(
                     response = ws_conn.send(TextMessage(data=event["text"]))
 
             case "websocket.close":
-                if ws_conn.state not in {
+                if ws_conn.state is ConnectionState.CONNECTING:
+                    # Closing before accepting is how an ASGI app refuses the handshake, and the
+                    # spec answers it with an HTTP 403. A close frame cannot be sent before the
+                    # upgrade has been accepted.
+                    response = ws_conn.send(RejectConnection(status_code=403))
+                elif ws_conn.state not in {
                     ConnectionState.REMOTE_CLOSING,
                     ConnectionState.LOCAL_CLOSING,
                     ConnectionState.CLOSED,
