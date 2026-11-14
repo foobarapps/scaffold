@@ -11,6 +11,7 @@ from .csrf import (
 )
 from .decorators import (
     after_request,
+    after_serving,
     after_websocket,
     before_request,
     before_serving,
@@ -21,6 +22,7 @@ from .decorators import (
     route,
     stream_with_context,
     template_context_processor,
+    while_serving,
 )
 
 __all__ = [
@@ -29,6 +31,7 @@ __all__ = [
     "CSRFError",
     "CSRFProtect",
     "after_request",
+    "after_serving",
     "after_websocket",
     "before_request",
     "before_serving",
@@ -44,4 +47,5 @@ __all__ = [
     "stream_with_context",
     "template_context_processor",
     "validate_csrf_token",
+    "while_serving",
 ]

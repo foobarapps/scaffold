@@ -21,10 +21,12 @@ from quart import (
 )
 from quart.ctx import AppContext
 from quart.typing import (
+    AfterServingCallable,
     BeforeRequestCallable,
     BeforeServingCallable,
     TemplateContextProcessorCallable,
     TestClientProtocol,
+    WhileServingCallable,
 )
 
 from .assets import Assets
@@ -45,6 +47,16 @@ class ErrorHandlerCallbackFunction(Protocol):
 @runtime_checkable
 class BeforeServingCallbackFunction(Protocol):
     is_before_serving_callback: bool
+
+
+@runtime_checkable
+class AfterServingCallbackFunction(Protocol):
+    is_after_serving_callback: bool
+
+
+@runtime_checkable
+class WhileServingCallbackFunction(Protocol):
+    is_while_serving_callback: bool
 
 
 @runtime_checkable
@@ -161,6 +173,18 @@ class BaseWebApp:
 
     def before_serving(self, before_serving_callable: BeforeServingCallable) -> None:
         self.__app.before_serving(before_serving_callable)
+
+    def after_serving(self, after_serving_callable: AfterServingCallable) -> None:
+        self.__app.after_serving(after_serving_callable)
+
+    def while_serving(self, while_serving_callable: WhileServingCallable) -> None:
+        """
+        Run a generator around serving: up to its yield at startup, the rest at shutdown.
+
+        Useful for work that lives as long as the server, such as a background task
+        started before the yield and cancelled after it.
+        """
+        self.__app.while_serving(while_serving_callable)
 
     def before_request(self, before_request_callable: BeforeRequestCallable) -> None:
         self.__app.before_request(before_request_callable)
@@ -298,8 +322,16 @@ class BaseWebApp:
 
     def __register_app_callbacks(self) -> None:
         for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
-            if isinstance(method, BeforeServingCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
+            # The marker attributes live on the function. isinstance against a runtime
+            # checkable protocol looks attributes up statically since Python 3.12, so it
+            # does not see them through the bound method.
+            func = method.__func__
+            if isinstance(func, BeforeServingCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 self.__app.before_serving(method)
+            if isinstance(func, AfterServingCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
+                self.__app.after_serving(method)
+            if isinstance(func, WhileServingCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
+                self.__app.while_serving(method)
 
     def __register_controller_callbacks(
         self,
