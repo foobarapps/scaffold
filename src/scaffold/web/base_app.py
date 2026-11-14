@@ -106,15 +106,13 @@ class BaseWebApp:
         # Assets will be initialized in setup
         self.__assets: Assets | None = None
 
+        # First, so a health check never builds a controller or reaches routing.
+        self.__app.before_request(self.__answer_health_check)
         self.__app.before_request(self.__create_request_controller_instance)
         self.__app.before_websocket(self.__create_websocket_controller_instance)
 
         self.__register_app_callbacks()
         self.__setup_assets_serving()
-
-        @self.__app.route("/health")
-        def _() -> ResponseReturnValue:
-            return "", 200
 
         self.init()
 
@@ -206,6 +204,20 @@ class BaseWebApp:
 
             for full_name in blueprint_to_full_names[blueprint]:
                 self.__endpoint_to_controller_class[full_name] = controller_class
+
+    def __answer_health_check(self) -> ResponseReturnValue | None:
+        """
+        Answer /health on any Host, before routing gets a chance to reject it.
+
+        A platform health check arrives with whatever Host the platform picks: one of
+        several custom domains, any of which may be a subdomain, or the service's own
+        internal name before any domain is verified. With SERVER_NAME set, a route only
+        matches that host, so as a route this would 404 on all the others. Routing
+        failures are raised at dispatch, after before_request hooks have run.
+        """
+        if request.path == "/health" and request.method in ("GET", "HEAD"):
+            return "", 200
+        return None
 
     def __create_request_controller_instance(self) -> None:
         self.__create_controller_instance(request)
