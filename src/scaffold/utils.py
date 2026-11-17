@@ -3,12 +3,11 @@ import os
 import pkgutil
 from importlib import import_module
 from types import ModuleType
-from typing import cast
 from urllib.parse import urlparse, urlunparse
 
 
-def find_subclasses[T: type](package: ModuleType, base_class: T) -> list[T]:
-    subclasses: list[T] = []
+def find_subclasses[T](package: ModuleType, base_class: type[T]) -> list[type[T]]:
+    subclasses: list[type[T]] = []
 
     for _, subpath, ispkg in pkgutil.iter_modules(package.__path__):
         fullpath = package.__name__ + "." + subpath
@@ -22,7 +21,7 @@ def find_subclasses[T: type](package: ModuleType, base_class: T) -> list[T]:
                 and obj != base_class
                 and obj.__module__ == module.__name__
             ):
-                subclasses.append(cast(T, obj))
+                subclasses.append(obj)
 
     return subclasses
 
