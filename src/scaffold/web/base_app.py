@@ -185,6 +185,11 @@ class BaseWebApp:
     def static_folder(self) -> str | None:
         return self.__app.static_folder
 
+    @property
+    def assets(self) -> Assets:
+        """The app's assets, for code that needs an asset's name or URL outside of a template."""
+        return self.__get_assets()
+
     def app_context(self) -> AppContext:
         return self.__app.app_context()
 
@@ -505,31 +510,27 @@ class BaseWebApp:
         )
         self.__app.register_blueprint(blueprint)
 
-    async def __setup_assets(self) -> None:
-        """Initialize assets when the app starts serving."""
-        if self.__app.static_folder is None:
-            error_message = "A static folder has to be set"
-            raise RuntimeError(error_message)
+    def __get_assets(self) -> Assets:
+        if self.__assets is None:
+            if self.__app.static_folder is None:
+                error_message = "A static folder has to be set"
+                raise RuntimeError(error_message)
+            self.__assets = Assets(Path(self.__app.static_folder), auto_refresh=self.__refresh_assets)
+        return self.__assets
 
-        # Initialize assets container
-        static_dir = Path(self.__app.static_folder)
-        self.__assets = Assets(static_dir, auto_refresh=self.__refresh_assets)
-        await self.__assets.update_file_maps()
+    async def __setup_assets(self) -> None:
+        """Read the static folder when the app starts serving, off the event loop."""
+        await self.__get_assets().update_file_maps()
 
     async def __serve_assets(self, path: str) -> ResponseReturnValue:
         """Serve assets with hashed filenames."""
-        if self.__app.static_folder is None:
-            error_message = "A static folder has to be set"
-            raise RuntimeError(error_message)
+        assets = self.__get_assets()
+        static_folder = assets.static_dir
 
-        if self.__assets is None:
-            error_message = "Assets not initialized"
-            raise RuntimeError(error_message)
-
-        original_filename = self.__assets.get_original_filename(path)
+        original_filename = assets.get_original_filename(path)
 
         try:
-            is_file = (Path(self.__app.static_folder) / original_filename).is_file()
+            is_file = (static_folder / original_filename).is_file()
         except OSError:
             # A name the file system cannot even look up, e.g. one that is too long
             is_file = False
@@ -538,9 +539,9 @@ class BaseWebApp:
 
         # A hashed name never serves different content, so it can be cached for good.
         # A plain name has to be revalidated, because the file behind it can change.
-        is_hashed = self.__assets.is_hashed_filename(path)
+        is_hashed = assets.is_hashed_filename(path)
         response = await send_from_directory(
-            self.__app.static_folder,
+            static_folder,
             original_filename,
             conditional=True,
             cache_timeout=ONE_YEAR_IN_SECONDS if is_hashed else 0,
@@ -552,7 +553,7 @@ class BaseWebApp:
 
     def __template_context(self) -> dict[str, Any]:
         """Inject assets into template context."""
-        return {"assets": self.__assets}
+        return {"assets": self.__get_assets()}
 
     async def __call__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
         return await self.__app(*args, **kwargs)

@@ -22,6 +22,7 @@ class Assets:
         self.reverse_map: dict[str, str] = {}
         self._signature: tuple[int, int] | None = None
         self._last_refresh_check = 0.0
+        self._loaded = False
 
     def _collect_files(self, static_dir: Path) -> list[Path]:
         return [file for file in static_dir.rglob("*") if file.is_file()]
@@ -56,6 +57,7 @@ class Assets:
         """Update the file mapping dictionaries."""
         self._signature = await asyncio.to_thread(self._read_signature)
         self.file_map, self.reverse_map = await self.create_file_map(self.static_dir)
+        self._loaded = True
 
     def get_original_filename(self, hashed_filename: str) -> str:
         """Get the original filename from a hashed filename."""
@@ -101,6 +103,11 @@ class Assets:
         return len(files), max((file.stat().st_mtime_ns for file in files), default=0)
 
     def _refresh_if_changed(self) -> None:
+        if not self._loaded:
+            # Nothing has read the folder yet, e.g. in a test that never starts the server
+            self._load()
+            return
+
         if not self.auto_refresh:
             return
 
@@ -109,10 +116,11 @@ class Assets:
             return
         self._last_refresh_check = now
 
-        signature = self._read_signature()
-        if signature == self._signature:
-            return
+        if self._read_signature() != self._signature:
+            self._load()
 
+    def _load(self) -> None:
+        signature = self._read_signature()
         file_map: dict[str, str] = {}
         reverse_map: dict[str, str] = {}
         for file in self._collect_files(self.static_dir):
@@ -124,6 +132,8 @@ class Assets:
 
         self._signature = signature
         self.file_map, self.reverse_map = file_map, reverse_map
+        self._last_refresh_check = time.monotonic()
+        self._loaded = True
 
     def __getitem__(self, path: str) -> str:
         """Retrieve a hashed filename by the relative path."""

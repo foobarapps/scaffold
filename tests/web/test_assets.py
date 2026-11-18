@@ -157,3 +157,12 @@ async def test_asset_url_carries_content_hash(static_dir: Path) -> None:
         url = (await load_assets(static_dir)).url_for("js/app.js")
 
     assert url == f"/assets/{hashed}"
+
+
+async def test_assets_work_in_an_app_that_was_never_started(static_dir: Path) -> None:
+    app = BaseWebApp("__main__", static_folder=static_dir)
+
+    response = await app.test_client().get(f"/assets/{app.assets['css/app.css']}")
+
+    assert response.status_code == 200
+    assert "immutable" in response.headers["Cache-Control"]
