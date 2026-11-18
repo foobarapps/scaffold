@@ -111,3 +111,23 @@ async def test_context_exit_after_commit_only_closes_session() -> None:
     session.commit.assert_awaited_once()
     session.rollback.assert_not_awaited()
     session.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_commit_closes_the_unit_of_work() -> None:
+    session = AsyncMock()
+    session.commit.side_effect = RuntimeError("duplicate key")
+    uow = BaseSqlUnitOfWork(session)
+    repo = RecordingRepository()
+    uow.register_repository(repo)
+
+    async with uow:
+        with pytest.raises(RuntimeError, match="duplicate key"):
+            await uow.commit()
+
+        with pytest.raises(UnitOfWorkClosedError):
+            await uow.commit()
+
+    assert repo.cleared == 1
+    # Closing the session rolls back what the failed commit left behind
+    session.close.assert_awaited_once()

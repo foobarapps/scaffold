@@ -31,20 +31,24 @@ class BaseSqlUnitOfWork:
         if not self._closed:
             await self.rollback()
 
+        # Closing also rolls back whatever a failed commit left behind
         await self.session.close()  # TODO use reset instead?
 
     async def commit(self) -> None:
         self._ensure_open()
 
-        for repo in self.repositories:
-            await repo.flush()
+        try:
+            for repo in self.repositories:
+                await repo.flush()
 
-        await self.session.commit()
+            await self.session.commit()
+        finally:
+            # Closed whether or not the commit went through: a unit of work is one attempt
+            # at one transaction. To try again or to look at what it ran into, start a new one.
+            for repo in self.repositories:
+                repo.clear_tracking()
 
-        for repo in self.repositories:
-            repo.clear_tracking()
-
-        self._closed = True
+            self._closed = True
 
     async def rollback(self) -> None:
         self._ensure_open()
