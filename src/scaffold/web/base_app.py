@@ -371,18 +371,18 @@ class BaseWebApp:
             controller_class,
             predicate=lambda member: inspect.isfunction(member) and isinstance(member, RouteFunction),  # pyright: ignore[reportUnnecessaryIsInstance]
         ):
-            rule, options = view_function.route
-
             wrapped_view_function = self.__bind_controller(
                 view_function,
             )
 
-            blueprint.add_url_rule(
-                rule=rule,
-                endpoint=view_function_name,
-                view_func=wrapped_view_function,
-                **options,
-            )
+            routes: list[tuple[str, dict[str, Any]]] = getattr(view_function, "routes", [view_function.route])
+            for rule, options in routes:
+                blueprint.add_url_rule(
+                    rule=rule,
+                    endpoint=view_function_name,
+                    view_func=wrapped_view_function,
+                    **options,
+                )
 
     def __register_app_callbacks(self) -> None:
         for _, method in inspect.getmembers(self, predicate=inspect.ismethod):

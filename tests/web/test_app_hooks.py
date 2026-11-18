@@ -20,6 +20,11 @@ class GreetingsController(BaseController):
     async def teapot(self) -> str:
         raise TeapotError
 
+    @route("/goodbye", defaults={"name": None})
+    @route("/goodbye/<name>")
+    async def goodbye(self, name: str | None) -> str:
+        return f"Goodbye {name or 'everyone'}"
+
 
 def create_app(server_name: str | None = None) -> BaseWebApp:
     app = BaseWebApp("__main__", server_name=server_name)
@@ -137,3 +142,23 @@ async def test_request_context_is_available_for_tests() -> None:
 
     async with app.test_request_context("/hello/Ada"):
         assert GreetingsController.url_for("greetings.hello", name="Grace") == "/hello/Grace"
+
+
+@pytest.mark.asyncio
+async def test_stacked_routes_serve_one_method_at_several_rules() -> None:
+    client = create_app().test_client()
+
+    with_name = await client.get("/goodbye/Ada")
+    without_name = await client.get("/goodbye")
+
+    assert await with_name.get_data(as_text=True) == "Goodbye Ada"
+    assert await without_name.get_data(as_text=True) == "Goodbye everyone"
+
+
+@pytest.mark.asyncio
+async def test_stacked_routes_share_one_endpoint() -> None:
+    app = create_app()
+
+    async with app.test_request_context("/"):
+        assert GreetingsController.url_for("greetings.goodbye") == "/goodbye"
+        assert GreetingsController.url_for("greetings.goodbye", name="Ada") == "/goodbye/Ada"
