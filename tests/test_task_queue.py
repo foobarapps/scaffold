@@ -18,7 +18,7 @@ from psycopg.rows import TupleRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic_core import PydanticSerializationError
 
-from scaffold.task_queue import PostgresTaskQueue, TaskInfo, migrations
+from scaffold.task_queue import GenericFakeTaskQueue, PostgresTaskQueue, TaskInfo, migrations
 
 # The queue round-trips a task through Postgres by module and class name, so this has to be
 # a module-level type that `importlib.import_module` can find again.
@@ -824,3 +824,167 @@ async def test_enqueue_opens_the_pool_itself(postgres_dsn: str, schema_name: str
 
     rows = await fetch_all(postgres_dsn, sql.SQL("SELECT queue FROM {task}").format(task=table(schema_name)))
     assert [row["queue"] for row in rows] == ["default"]
+
+
+@pytest.mark.asyncio
+async def test_broken_progress_callback_does_not_stop_the_consumer(queue_factory: QueueFactory) -> None:
+    queue = await queue_factory(poll_interval=0.1)
+    handled: list[str] = []
+    calls = 0
+
+    def on_progress(consumer_id: int) -> None:
+        nonlocal calls
+        calls += 1
+        message = "the health check is broken"
+        raise RuntimeError(message)
+
+    async def handle(task: ExampleTask) -> None:
+        # Long enough for a lease renewal, which reports progress too
+        await asyncio.sleep(0.6)
+        handled.append(task.payload)
+
+    queue.register(ExampleTask, handler_factory(handle))
+    await queue.enqueue(ExampleTask("first"), visibility_timeout=1)
+    await queue.enqueue(ExampleTask("second"), visibility_timeout=1)
+
+    async with consuming(queue, on_progress=on_progress):
+        await eventually(lambda: handled == ["first", "second"])
+
+    assert calls > 0
+
+
+@pytest.mark.asyncio
+async def test_consume_fails_when_a_consumer_dies(queue_factory: QueueFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    queue = await queue_factory()
+
+    async def die(*args: object, **kwargs: object) -> None:
+        message = "the consumer died"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(queue, "_run", die)
+    queue.register(ExampleTask, handler_factory(die))
+    await queue.enqueue(ExampleTask("fatal"))
+
+    # Not stopped by anyone: the process has to find out, so that it can be restarted
+    with pytest.raises(RuntimeError, match="the consumer died"):
+        await asyncio.wait_for(queue.consume(stop=asyncio.Event(), concurrency=2), timeout=30)
+
+
+@pytest.mark.asyncio
+async def test_hung_handler_loses_its_lease_after_the_maximum_run_time(queue_factory: QueueFactory) -> None:
+    queue = await queue_factory(max_run_time=1.0, poll_interval=0.1)
+    runs = 0
+    second_run = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handle(task: ExampleTask) -> None:
+        nonlocal runs
+        runs += 1
+        if runs == 1:
+            # Hangs for good, as far as the queue can tell
+            await release.wait()
+        else:
+            second_run.set()
+
+    queue.register(ExampleTask, handler_factory(handle))
+    await queue.enqueue(ExampleTask("hangs"), visibility_timeout=1, max_attempts=1)
+
+    async with consuming(queue, concurrency=2):
+        await asyncio.wait_for(second_run.wait(), timeout=30)
+        release.set()
+
+    assert runs == 2
+
+
+@pytest.mark.asyncio
+async def test_handle_tasks_does_not_renew_the_lease(queue_factory: QueueFactory) -> None:
+    queue = await queue_factory()
+    runs = 0
+    second_run = asyncio.Event()
+
+    async def handle(task: ExampleTask) -> None:
+        nonlocal runs
+        runs += 1
+        if runs == 1:
+            await asyncio.sleep(3)
+        else:
+            second_run.set()
+
+    queue.register(ExampleTask, handler_factory(handle))
+    await queue.enqueue(ExampleTask("outlives its visibility timeout"), visibility_timeout=1)
+
+    async with running_worker(queue):
+        # Handed out again once the visibility timeout is over, as before consume() existed
+        await asyncio.wait_for(second_run.wait(), timeout=30)
+
+
+class CountingQueue(PostgresTaskQueue[ExampleTask]):
+    handled_ids: list[uuid.UUID]
+
+    async def handle_task(self, task_id: uuid.UUID, task: ExampleTask) -> None:
+        self.handled_ids.append(task_id)
+        await super().handle_task(task_id, task)
+
+
+@pytest.mark.asyncio
+async def test_handle_tasks_goes_through_an_overridden_handle_task(postgres_dsn: str, schema_name: str) -> None:
+    async with make_pool(postgres_dsn) as pool:
+        await migrations.upgrade(pool, schema_name=schema_name)
+        queue = CountingQueue(pool, schema_name=schema_name, notify_channel_name=f"n_{uuid.uuid4().hex}")
+        queue.handled_ids = []
+        handled: list[str] = []
+
+        async def handle(task: ExampleTask) -> None:
+            handled.append(task.payload)
+
+        queue.register(ExampleTask, handler_factory(handle))
+        await queue.init()
+        await queue.enqueue(ExampleTask("through the override"))
+
+        async with running_worker(queue):
+            await eventually(lambda: handled == ["through the override"])
+
+        assert len(queue.handled_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_init_accepts_a_schema_newer_than_this_build(postgres_dsn: str, schema_name: str) -> None:
+    async with make_pool(postgres_dsn) as pool:
+        await migrations.upgrade(pool, schema_name=schema_name)
+        async with pool.connection() as conn:
+            await conn.execute(
+                sql.SQL("INSERT INTO {version} (version, applied_at) VALUES (%s, NOW())").format(
+                    version=table(schema_name, "task_schema_version"),
+                ),
+                (migrations.LATEST_VERSION + 1,),
+            )
+
+        # A later release only adds to the schema, so this build can still work with it,
+        # which is what makes rolling a deploy back possible.
+        await PostgresTaskQueue[ExampleTask](pool, schema_name=schema_name).init()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_keeps_the_index_that_serves_every_queue_at_once(postgres_dsn: str, schema_name: str) -> None:
+    async with make_pool(postgres_dsn) as pool:
+        await migrations.upgrade(pool, schema_name=schema_name)
+
+    indexes = await fetch_all(
+        postgres_dsn,
+        sql.SQL("SELECT indexname FROM pg_indexes WHERE schemaname = {schema}").format(schema=sql.Literal(schema_name)),
+    )
+    assert {"task_pending_idx", "task_queue_pending_idx"} <= {row["indexname"] for row in indexes}
+
+
+def test_fake_queue_takes_what_the_real_one_takes() -> None:
+    queue = GenericFakeTaskQueue[ExampleTask]()
+    task = ExampleTask("for a user")
+
+    queue.enqueue(task, queue="reports", max_attempts=1, metadata={"user_id": "42"})
+
+    assert queue.queue == [task]
+    assert (queue.enqueued[0].queue, queue.enqueued[0].max_attempts) == ("reports", 1)
+    assert queue.enqueued[0].metadata == {"user_id": "42"}
+    assert inspect.signature(queue.enqueue).parameters.keys() == inspect.signature(
+        PostgresTaskQueue.enqueue
+    ).parameters.keys() - {"self"}
