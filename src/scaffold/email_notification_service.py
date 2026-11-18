@@ -35,6 +35,22 @@ class Message:
     attachments: Sequence[Attachment] = ()
 
 
+class MailDeliveryError(Exception):
+    """The mail service could not be reached or refused the message."""
+
+
+class MailRecipientInactiveError(MailDeliveryError):
+    """
+    The mail service will not deliver to this recipient, e.g. after a hard bounce or a spam complaint.
+
+    Sending again will not help, so the app should stop mailing the address.
+    """
+
+    def __init__(self, reason: str = "inactive_recipient") -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
 class MailSender(abc.ABC):
     @abc.abstractmethod
     async def send(

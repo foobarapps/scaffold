@@ -36,11 +36,20 @@ class SmtpMailSender(MailSender):
         username: str | None = None,
         password: str | None = None,
         message_id_domain: str | None = None,
+        use_tls: bool = False,
+        start_tls: bool | None = None,
     ) -> None:
+        """
+        `use_tls` connects over TLS from the start (port 465, usually). `start_tls` upgrades
+        a plain connection with STARTTLS: True requires it, False never does it, and None,
+        the default, upgrades when the server offers it.
+        """
         self.host = host
         self.port = port
         self.username = username
         self.password = password
+        self.use_tls = use_tls
+        self.start_tls = start_tls
         # When unset, the Message-ID domain is the local host name.
         self.message_id_domain = message_id_domain
 
@@ -55,11 +64,26 @@ class SmtpMailSender(MailSender):
             recipients=input.recipients,
             hostname=self.host,
             port=self.port,
-            username=self.username,
-            password=self.password,
+            # Both or neither: a user name on its own would make aiosmtplib try to log in
+            username=self.username if self.username and self.password else None,
+            password=self.password if self.username and self.password else None,
+            use_tls=self.use_tls,
+            start_tls=self.start_tls,
         )
 
         return message_id
+
+
+class InMemoryMailSender(MailSender):
+    """Keeps the messages instead of sending them, for tests and for running an app without mail."""
+
+    def __init__(self) -> None:
+        self.messages: list[Message] = []
+
+    @override
+    async def send(self, input: Message) -> str:
+        self.messages.append(input)
+        return make_msgid()
 
 
 def build_mime_message(input: Message, message_id: str) -> MIMEMultipart:
