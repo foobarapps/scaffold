@@ -1,5 +1,5 @@
 """
-Command line interface of an app, built on click.
+Command line interface of an app, built on click. Needs the `cli` extra: `scaffold-framework[cli]`.
 
     cli = create_cli(bootstrap)
 
@@ -18,7 +18,6 @@ passes its own container: `CliRunner().invoke(cli, ["send-reminders"], obj=conta
 """
 
 import asyncio
-import inspect
 from collections.abc import Callable, Coroutine
 from functools import wraps
 from typing import Concatenate
@@ -81,18 +80,3 @@ def pass_container[**P, R](f: Callable[Concatenate[Container, P], R]) -> Callabl
         return f(root.obj, *args, **kwargs)
 
     return wrapper
-
-
-def find_unawaited_commands(group: click.Group) -> list[str]:
-    """
-    The names of commands whose callback is a coroutine function that nothing would await.
-
-    For a test that guards against a command missing `run_async`.
-    """
-    unawaited: list[str] = []
-    for name, command in group.commands.items():
-        if isinstance(command, click.Group):
-            unawaited += [f"{name} {child}" for child in find_unawaited_commands(command)]
-        elif command.callback is not None and inspect.iscoroutinefunction(command.callback):
-            unawaited.append(name)
-    return sorted(unawaited)

@@ -28,17 +28,23 @@ class Assets:
         return [file for file in static_dir.rglob("*") if file.is_file()]
 
     async def generate_hash(self, content: bytes) -> str:
+        return self._hash(content)
+
+    @staticmethod
+    def _hash(content: bytes) -> str:
         return hashlib.md5(content).hexdigest()  # noqa: S324
+
+    def _hashed_path(self, file: Path, content: bytes) -> tuple[str, str]:
+        """The path of a file relative to the static folder, plain and with the content hash in its name."""
+        relative_path = file.relative_to(self.static_dir)
+        # The directory structure is kept, only the file name changes
+        hashed_path = relative_path.with_name(f"{file.stem}.{self._hash(content)}{file.suffix}")
+        return str(relative_path), str(hashed_path)
 
     async def hash_file(self, file: Path) -> tuple[str, str]:
         async with aiofiles.open(file, "rb") as f:
             content = await f.read()
-        hashed_content = await self.generate_hash(content)
-        hashed_file_name = file.with_stem(f"{file.stem}.{hashed_content}")
-        # Maintain the directory structure in the hashed filename
-        relative_path = file.relative_to(self.static_dir)
-        hashed_path = relative_path.with_name(hashed_file_name.name)
-        return str(relative_path), str(hashed_path)
+        return self._hashed_path(file, content)
 
     async def create_file_map(
         self,
@@ -124,11 +130,9 @@ class Assets:
         file_map: dict[str, str] = {}
         reverse_map: dict[str, str] = {}
         for file in self._collect_files(self.static_dir):
-            relative_path = file.relative_to(self.static_dir)
-            content_hash = hashlib.md5(file.read_bytes()).hexdigest()  # noqa: S324
-            hashed_path = relative_path.with_name(f"{file.stem}.{content_hash}{file.suffix}")
-            file_map[str(relative_path)] = str(hashed_path)
-            reverse_map[str(hashed_path)] = str(relative_path)
+            original, hashed = self._hashed_path(file, file.read_bytes())
+            file_map[original] = hashed
+            reverse_map[hashed] = original
 
         self._signature = signature
         self.file_map, self.reverse_map = file_map, reverse_map

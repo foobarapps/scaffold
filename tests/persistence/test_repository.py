@@ -148,33 +148,52 @@ async def test_entity_that_cannot_be_hashed_is_tracked_as_the_object_it_is() -> 
         repo.add(loaded)
 
 
-class AuditedRepository(ExampleRepository):
-    def __init__(self, uow: BaseSqlUnitOfWork) -> None:
-        super().__init__(uow)
-        self.added: list[ExampleEntity] = []
+@dataclasses.dataclass(eq=False)
+class Invoice:
+    id: int
+    # Given out by the database when the row is inserted
+    number: int | None = None
 
-    def _map_tracked_domain_to_persistence(self, entity: ExampleEntity, persistence_obj: ExampleDTO) -> ExampleDTO:
-        # Keeps the name the row was loaded with
-        return ExampleDTO(id=entity.id, name=persistence_obj.name)
 
-    async def _after_flush(self, new_entities: list[ExampleEntity]) -> None:
-        self.added += new_entities
+@dataclasses.dataclass
+class InvoiceRow:
+    id: int
+    number: int | None = None
+
+
+class InvoiceMapper:
+    def map_persistence_to_domain(self, dto: InvoiceRow) -> Invoice:
+        return Invoice(id=dto.id, number=dto.number)
+
+    def map_domain_to_persistence(self, entity: Invoice) -> InvoiceRow:
+        return InvoiceRow(id=entity.id, number=entity.number)
+
+
+class InvoiceRepository(GenericSqlRepository[Invoice, InvoiceRow]):
+    mapper = InvoiceMapper()
+
+    async def _after_flush(self, new_entities: list[Invoice]) -> None:
+        await self._session.flush()
+        for invoice in new_entities:
+            row = await self._session.get(InvoiceRow, invoice.id)
+            if row is not None:
+                invoice.number = row.number
 
 
 @pytest.mark.asyncio
-async def test_repository_can_hook_into_mapping_and_flushing() -> None:
+async def test_after_flush_can_copy_back_what_the_database_generated() -> None:
     session = AsyncMock()
     session.add = Mock()
-    repo = AuditedRepository(BaseSqlUnitOfWork(session))
-    loaded = repo.track_persisted(ExampleDTO(id=1, name="original"))
-    loaded.name = "changed"
-    new = ExampleEntity(id=2, name="new")
-    repo.add(new)
+    # The database numbers the invoice when it inserts the row
+    session.get.return_value = InvoiceRow(id=1, number=2026001)
+    repo = InvoiceRepository(BaseSqlUnitOfWork(session))
+    invoice = Invoice(id=1)
+    repo.add(invoice)
 
     await repo.flush()
 
-    session.merge.assert_awaited_once_with(ExampleDTO(id=1, name="original"))
-    assert repo.added == [new]
+    session.flush.assert_awaited_once()
+    assert invoice.number == 2026001
 
 
 @pytest.mark.asyncio

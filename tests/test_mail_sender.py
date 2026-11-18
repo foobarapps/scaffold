@@ -7,7 +7,7 @@ from typing import cast
 import aiosmtplib
 import pytest
 
-from scaffold.email_notification_service import Attachment, Message
+from scaffold.email_notification_service import Attachment, MailDeliveryError, Message
 from scaffold.mail_sender import InMemoryMailSender, SmtpMailSender, build_mime_message
 
 
@@ -409,3 +409,24 @@ async def test_in_memory_sender_keeps_the_messages() -> None:
 
     assert sender.messages == [message]
     assert message_id.startswith("<")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [aiosmtplib.SMTPRecipientsRefused([]), aiosmtplib.SMTPConnectError("refused"), ConnectionRefusedError("refused")],
+)
+async def test_smtp_failure_is_a_delivery_error(
+    monkeypatch: pytest.MonkeyPatch,
+    mail_sender: SmtpMailSender,
+    error: Exception,
+) -> None:
+    async def fail(*args: object, **kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(aiosmtplib, "send", fail)
+
+    with pytest.raises(MailDeliveryError) as excinfo:
+        await mail_sender.send(make_message())
+
+    assert excinfo.value.__cause__ is error

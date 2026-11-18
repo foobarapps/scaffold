@@ -3,7 +3,7 @@ import asyncio
 import click
 from click.testing import CliRunner
 
-from scaffold.cli import create_cli, find_unawaited_commands, pass_container, run_async
+from scaffold.cli import create_cli, pass_container, run_async
 from scaffold.di import Container
 
 
@@ -95,16 +95,6 @@ def test_run_async_returns_the_result_of_the_coroutine() -> None:
         return value * 2
 
     assert double(21) == 42
-
-
-def test_command_missing_run_async_is_found() -> None:
-    cli = make_cli()
-
-    @cli.command("forgotten")
-    async def forgotten() -> None:
-        pass
-
-    assert find_unawaited_commands(cli) == ["forgotten"]
 
 
 def test_pass_container_outside_of_create_cli_is_refused() -> None:

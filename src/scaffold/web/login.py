@@ -16,7 +16,7 @@ Flask-Login writes, so an app moving over from Flask-Login keeps its users signe
 
 import datetime
 import hmac
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from functools import wraps
 from hashlib import sha512
 from typing import Final, Protocol, cast
@@ -46,6 +46,14 @@ NEXT_SESSION_KEY: Final = "next"
 # Written by Flask-Login for its session protection, which is not used any more
 LEGACY_SESSION_IDENTIFIER_KEY: Final = "_id"
 
+# The remember-me cookie is written when the response goes out, so signing in and out only
+# leave a note in the session saying what to do with it. Values are Flask-Login's.
+REMEMBER_SET: Final = "set"
+REMEMBER_CLEAR: Final = "clear"
+
+# Defaults of the REMEMBER_COOKIE_* settings, which mean what they mean in Flask-Login:
+# REMEMBER_COOKIE_NAME, _DURATION (a timedelta or seconds), _DOMAIN, _PATH, _SECURE,
+# _HTTPONLY and _SAMESITE.
 REMEMBER_COOKIE_NAME: Final = "remember_token"
 REMEMBER_COOKIE_DURATION: Final = datetime.timedelta(days=365)
 
@@ -56,6 +64,11 @@ CONFIG_KEY: Final = "LOGIN_MANAGER"
 class AuthenticatedUser(Protocol):
     @property
     def is_authenticated(self) -> bool: ...
+
+    @property
+    def is_active(self) -> bool:
+        """False for an account that may not sign in, e.g. a suspended one."""
+        ...
 
     def get_id(self) -> str: ...
 
@@ -131,8 +144,8 @@ class LoginManager[U: AuthenticatedUser]:
         if user_id is not None:
             user = await self._user_loader(str(user_id))
 
-        if user is None and session.get(REMEMBER_SESSION_KEY) != "clear":
-            cookie = request.cookies.get(REMEMBER_COOKIE_NAME)
+        if user is None and session.get(REMEMBER_SESSION_KEY) != REMEMBER_CLEAR:
+            cookie = request.cookies.get(_remember_cookie_name())
             remembered_user_id = _decode_cookie(cookie) if cookie is not None else None
             if remembered_user_id is not None:
                 session[USER_ID_SESSION_KEY] = remembered_user_id
@@ -147,22 +160,40 @@ class LoginManager[U: AuthenticatedUser]:
 
         operation = session.pop(REMEMBER_SESSION_KEY, None)
 
-        if operation == "set" and USER_ID_SESSION_KEY in session:
-            response.set_cookie(
-                REMEMBER_COOKIE_NAME,
-                value=_encode_cookie(str(session[USER_ID_SESSION_KEY])),
-                expires=datetime.datetime.now(datetime.UTC) + REMEMBER_COOKIE_DURATION,
-                path="/",
-                httponly=True,
+        config = cast("Mapping[str, object]", current_app.config)
+        name = _remember_cookie_name()
+        domain = cast("str | None", config.get("REMEMBER_COOKIE_DOMAIN"))
+        path = cast("str", config.get("REMEMBER_COOKIE_PATH", "/"))
+
+        if operation == REMEMBER_SET and USER_ID_SESSION_KEY in session:
+            duration = cast(
+                "datetime.timedelta | int", config.get("REMEMBER_COOKIE_DURATION", REMEMBER_COOKIE_DURATION),
             )
-        elif operation == "clear":
-            response.delete_cookie(REMEMBER_COOKIE_NAME, path="/")
+            if not isinstance(duration, datetime.timedelta):
+                duration = datetime.timedelta(seconds=duration)
+            response.set_cookie(
+                name,
+                value=_encode_cookie(str(session[USER_ID_SESSION_KEY])),
+                expires=datetime.datetime.now(datetime.UTC) + duration,
+                domain=domain,
+                path=path,
+                secure=bool(config.get("REMEMBER_COOKIE_SECURE", False)),
+                httponly=bool(config.get("REMEMBER_COOKIE_HTTPONLY", True)),
+                samesite=cast("str | None", config.get("REMEMBER_COOKIE_SAMESITE")),
+            )
+        elif operation == REMEMBER_CLEAR:
+            response.delete_cookie(name, domain=domain, path=path)
 
         return response
 
 
 def _never() -> bool:
     return False
+
+
+def _remember_cookie_name() -> str:
+    config = cast("Mapping[str, object]", current_app.config)
+    return cast("str", config.get("REMEMBER_COOKIE_NAME", REMEMBER_COOKIE_NAME))
 
 
 def get_current_user() -> AuthenticatedUser | AnonymousUser:
@@ -178,21 +209,30 @@ def get_current_user() -> AuthenticatedUser | AnonymousUser:
 current_user = LocalProxy(get_current_user)
 
 
-def login_user(user: AuthenticatedUser, *, remember: bool = False) -> None:
+def login_user(user: AuthenticatedUser, *, remember: bool = False, force: bool = False) -> bool:
+    """
+    Sign the user in and tell whether that happened.
+
+    A user who is not active is refused, unless `force` is set.
+    """
+    if not force and not user.is_active:
+        return False
+
     session[USER_ID_SESSION_KEY] = user.get_id()
     session[FRESH_SESSION_KEY] = True
     session.pop(LEGACY_SESSION_IDENTIFIER_KEY, None)
     if remember:
-        session[REMEMBER_SESSION_KEY] = "set"
+        session[REMEMBER_SESSION_KEY] = REMEMBER_SET
     g.login_user = user
+    return True
 
 
 def logout_user() -> None:
     session.pop(USER_ID_SESSION_KEY, None)
     session.pop(FRESH_SESSION_KEY, None)
     session.pop(LEGACY_SESSION_IDENTIFIER_KEY, None)
-    if REMEMBER_COOKIE_NAME in request.cookies:
-        session[REMEMBER_SESSION_KEY] = "clear"
+    if _remember_cookie_name() in request.cookies:
+        session[REMEMBER_SESSION_KEY] = REMEMBER_CLEAR
     g.login_user = None
 
 

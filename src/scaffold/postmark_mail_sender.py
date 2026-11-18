@@ -1,3 +1,5 @@
+"""Sends mail through Postmark's HTTP API. Needs the `postmark` extra: `scaffold-framework[postmark]`."""
+
 import base64
 from typing import override
 

@@ -7,7 +7,7 @@ from typing import override
 
 import aiosmtplib
 
-from .email_notification_service import Attachment, MailSender, Message
+from .email_notification_service import Attachment, MailDeliveryError, MailSender, Message
 
 # Headers the sender constructs itself, either directly or through MIMEMultipart.
 # Custom headers are not allowed to overwrite them.
@@ -58,18 +58,23 @@ class SmtpMailSender(MailSender):
         message_id = make_msgid(domain=self.message_id_domain)
         message = build_mime_message(input, message_id)
 
-        await aiosmtplib.send(
-            message,
-            sender=input.sender,
-            recipients=input.recipients,
-            hostname=self.host,
-            port=self.port,
-            # Both or neither: a user name on its own would make aiosmtplib try to log in
-            username=self.username if self.username and self.password else None,
-            password=self.password if self.username and self.password else None,
-            use_tls=self.use_tls,
-            start_tls=self.start_tls,
-        )
+        try:
+            await aiosmtplib.send(
+                message,
+                sender=input.sender,
+                recipients=input.recipients,
+                hostname=self.host,
+                port=self.port,
+                # Both or neither: a user name on its own would make aiosmtplib try to log in
+                username=self.username if self.username and self.password else None,
+                password=self.password if self.username and self.password else None,
+                use_tls=self.use_tls,
+                start_tls=self.start_tls,
+            )
+        except (aiosmtplib.SMTPException, OSError) as exc:
+            # The same error whichever sender is in use, so a caller can handle one
+            error_message = f"Failed to send email: {exc}"
+            raise MailDeliveryError(error_message) from exc
 
         return message_id
 

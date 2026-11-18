@@ -60,14 +60,14 @@ async def test_second_commit_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rollback_after_commit_raises() -> None:
+async def test_rollback_after_commit_does_nothing() -> None:
     session = AsyncMock()
     uow = BaseSqlUnitOfWork(session)
 
     await uow.commit()
+    await uow.rollback()
 
-    with pytest.raises(UnitOfWorkClosedError, match="closed Unit of Work"):
-        await uow.rollback()
+    session.rollback.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -114,20 +114,37 @@ async def test_context_exit_after_commit_only_closes_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_commit_closes_the_unit_of_work() -> None:
+async def test_failed_commit_rolls_back_and_closes_the_unit_of_work() -> None:
     session = AsyncMock()
     session.commit.side_effect = RuntimeError("duplicate key")
     uow = BaseSqlUnitOfWork(session)
     repo = RecordingRepository()
     uow.register_repository(repo)
 
-    async with uow:
-        with pytest.raises(RuntimeError, match="duplicate key"):
-            await uow.commit()
+    with pytest.raises(RuntimeError, match="duplicate key"):
+        await uow.commit()
 
-        with pytest.raises(UnitOfWorkClosedError):
-            await uow.commit()
-
+    # Rolled back by the unit of work itself, with or without a context manager around it
+    session.rollback.assert_awaited_once()
     assert repo.cleared == 1
-    # Closing the session rolls back what the failed commit left behind
-    session.close.assert_awaited_once()
+    with pytest.raises(UnitOfWorkClosedError):
+        await uow.commit()
+
+
+@pytest.mark.asyncio
+async def test_rollback_in_an_error_handler_keeps_the_original_error() -> None:
+    session = AsyncMock()
+    session.commit.side_effect = RuntimeError("duplicate key")
+    uow = BaseSqlUnitOfWork(session)
+
+    async def commit_or_roll_back() -> None:
+        try:
+            await uow.commit()
+        except Exception:
+            await uow.rollback()
+            raise
+
+    with pytest.raises(RuntimeError, match="duplicate key"):
+        await commit_or_roll_back()
+
+    session.rollback.assert_awaited_once()

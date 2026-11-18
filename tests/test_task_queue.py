@@ -986,5 +986,5 @@ def test_fake_queue_takes_what_the_real_one_takes() -> None:
     assert (queue.enqueued[0].queue, queue.enqueued[0].max_attempts) == ("reports", 1)
     assert queue.enqueued[0].metadata == {"user_id": "42"}
     assert inspect.signature(queue.enqueue).parameters.keys() == inspect.signature(
-        PostgresTaskQueue.enqueue
+        PostgresTaskQueue.enqueue,
     ).parameters.keys() - {"self"}

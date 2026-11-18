@@ -64,11 +64,11 @@ class GenericSqlRepository[E, DTO](abc.ABC):
             self._track(entity, persistence_obj)
         self._new_entities.clear()
 
-        for key, (entity, persistence_obj) in self._identity_map.items():
+        for key, (entity, _) in self._identity_map.items():
             if key in new_keys or key in self._deleted_entities:
                 continue
 
-            await self._session.merge(self._map_tracked_domain_to_persistence(entity, persistence_obj))
+            await self._session.merge(self.mapper.map_domain_to_persistence(entity))
 
         for key in self._deleted_entities:
             tracked = self._identity_map.get(key)
@@ -81,18 +81,13 @@ class GenericSqlRepository[E, DTO](abc.ABC):
 
         await self._after_flush(new_entities)
 
-    def _map_tracked_domain_to_persistence(self, entity: E, persistence_obj: DTO) -> DTO:
-        """
-        Map an entity that was loaded earlier back to persistence, to be merged into the session.
-
-        Override it when the mapping needs the object the entity was loaded from, e.g. to
-        carry over a column the entity does not hold.
-        """
-        del persistence_obj
-        return self.mapper.map_domain_to_persistence(entity)
-
     async def _after_flush(self, new_entities: list[E]) -> None:  # noqa: B027
-        """Called at the end of a flush with the entities it added. Does nothing by default."""
+        """
+        Called at the end of a flush with the entities it added. Does nothing by default.
+
+        Override it to copy back what the database generated for a new row, e.g. a serial
+        number the entity carries next to its id: flush the session, then read the value.
+        """
 
     @typing.final
     def clear_tracking(self) -> None:

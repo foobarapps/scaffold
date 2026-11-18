@@ -166,3 +166,37 @@ async def test_assets_work_in_an_app_that_was_never_started(static_dir: Path) ->
 
     assert response.status_code == 200
     assert "immutable" in response.headers["Cache-Control"]
+
+
+def change(file: Path, content: str) -> None:
+    file.write_text(content)
+    # Some file systems keep modification times too coarse to tell two writes apart
+    os.utime(file, ns=(file.stat().st_atime_ns, file.stat().st_mtime_ns + 1_000_000_000))
+
+
+async def test_app_picks_up_a_changed_file_with_refresh_assets(
+    static_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("scaffold.web.assets.REFRESH_INTERVAL", 0.0)
+    app = BaseWebApp("__main__", static_folder=static_dir, refresh_assets=True)
+    await start(app)
+    old_name = app.assets["css/app.css"]
+
+    change(static_dir / "css" / "app.css", "body { color: red; }")
+
+    new_name = app.assets["css/app.css"]
+    assert new_name != old_name
+    response = await app.test_client().get(f"/assets/{new_name}")
+    assert await response.get_data(as_text=True) == "body { color: red; }"
+    assert "immutable" in response.headers["Cache-Control"]
+
+
+async def test_app_keeps_serving_what_it_read_at_startup_without_refresh_assets(static_dir: Path) -> None:
+    app = BaseWebApp("__main__", static_folder=static_dir)
+    await start(app)
+    old_name = app.assets["css/app.css"]
+
+    change(static_dir / "css" / "app.css", "body { color: red; }")
+
+    assert app.assets["css/app.css"] == old_name

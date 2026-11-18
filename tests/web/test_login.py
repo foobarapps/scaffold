@@ -22,6 +22,7 @@ pytestmark = pytest.mark.asyncio
 class User:
     id: str
     name: str
+    is_active: bool = True
 
     @property
     def is_authenticated(self) -> bool:
@@ -31,7 +32,7 @@ class User:
         return self.id
 
 
-USERS = {"1": User("1", "Eva")}
+USERS = {"1": User("1", "Eva"), "2": User("2", "Suspended", is_active=False)}
 
 
 def make_app(*, login_view: str | None = "sign_in", skip_assets: bool = False) -> BaseWebApp:
@@ -53,7 +54,12 @@ def make_app(*, login_view: str | None = "sign_in", skip_assets: bool = False) -
     async def sign_in() -> str:
         if request.method == "POST":
             form = await request.form
-            login_user(USERS["1"], remember=form.get("remember") == "1")
+            signed_in = login_user(
+                USERS[form.get("user", "1")],
+                remember=form.get("remember") == "1",
+                force=form.get("force") == "1",
+            )
+            return "signed in" if signed_in else "refused"
         return "sign in page"
 
     async def sign_out() -> str:
@@ -173,3 +179,45 @@ async def test_skipped_request_loads_no_user_and_leaves_the_session_alone() -> N
 
     assert app.config["LOADS"] == []
     assert "Cookie" not in response.headers.get("Vary", "")
+
+
+async def test_inactive_user_is_refused_unless_forced() -> None:
+    client = make_app().test_client()
+
+    response = await client.post("/sign-in", form={"user": "2"})
+    assert await response.get_data(as_text=True) == "refused"
+    assert await text(client, "/whoami") == "anonymous"
+
+    response = await client.post("/sign-in", form={"user": "2", "force": "1"})
+    assert await response.get_data(as_text=True) == "signed in"
+    assert await text(client, "/whoami") == "Suspended"
+
+
+async def test_remember_cookie_is_not_secure_by_default_but_is_http_only() -> None:
+    client = make_app().test_client()
+
+    cookie = (await client.post("/sign-in", form={"remember": "1"})).headers["Set-Cookie"]
+
+    assert cookie.startswith(f"{REMEMBER_COOKIE_NAME}=")
+    assert "HttpOnly" in cookie
+    assert "Secure" not in cookie
+    assert "Path=/" in cookie
+
+
+async def test_remember_cookie_follows_the_settings_flask_login_uses() -> None:
+    app = make_app()
+    app.config.update(
+        REMEMBER_COOKIE_NAME="keep_me",
+        REMEMBER_COOKIE_DURATION=60,
+        REMEMBER_COOKIE_DOMAIN="example.test",
+        REMEMBER_COOKIE_PATH="/app",
+        REMEMBER_COOKIE_SECURE=True,
+        REMEMBER_COOKIE_SAMESITE="Lax",
+    )
+    client = app.test_client()
+
+    cookie = (await client.post("/sign-in", form={"remember": "1"})).headers["Set-Cookie"]
+
+    assert cookie.startswith("keep_me=")
+    for attribute in ("Domain=example.test", "Path=/app", "Secure", "HttpOnly", "SameSite=Lax"):
+        assert attribute in cookie
