@@ -459,8 +459,14 @@ async def lifespan(
     startup_failed_message = ""
     shutdown_failed_message = ""
 
+    startup_sent = False
+
     async def receive() -> ASGIReceiveEvent:
-        if not startup_complete.is_set() and not startup_failed.is_set():
+        # Each event is delivered once. An app, or a middleware fanning the events out to
+        # several apps, may ask for the next one before it has finished starting up.
+        nonlocal startup_sent
+        if not startup_sent:
+            startup_sent = True
             return {"type": "lifespan.startup"}
         await shutdown_started.wait()
         return {"type": "lifespan.shutdown"}

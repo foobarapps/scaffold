@@ -8,6 +8,7 @@ from typing import Any, Concatenate, Protocol, cast, runtime_checkable
 
 from flask.sansio.blueprints import Blueprint as SansioBlueprint  # type: ignore
 from flask.templating import Environment
+from hypercorn.typing import ASGIFramework
 from quart import (
     Blueprint,
     Quart,
@@ -19,8 +20,9 @@ from quart import (
     send_from_directory,  # type: ignore
     websocket,
 )
-from quart.ctx import AppContext
+from quart.ctx import AppContext, RequestContext
 from quart.typing import (
+    AfterRequestCallable,
     AfterServingCallable,
     BeforeRequestCallable,
     BeforeServingCallable,
@@ -95,7 +97,15 @@ class BaseWebApp:
         secret_key: bytes | None = None,
         server_name: str | None = None,
         propagate_exceptions: bool = False,
+        serve_assets: bool = True,
     ) -> None:
+        """
+        `server_name` makes routes match that host only and is the host of URLs built
+        outside of a request. Without it requests are accepted on any host.
+
+        `serve_assets` can be turned off by an app that brings its own asset pipeline;
+        the /assets route and the `assets` template variable are then left to the app.
+        """
         self.__app = Quart(root_package_name)
 
         # TODO expose all config vars (https://flask.palletsprojects.com/en/stable/config/) through the constructor
@@ -124,7 +134,8 @@ class BaseWebApp:
         self.__app.before_websocket(self.__create_websocket_controller_instance)
 
         self.__register_app_callbacks()
-        self.__setup_assets_serving()
+        if serve_assets:
+            self.__setup_assets_serving()
 
         self.init()
 
@@ -188,6 +199,59 @@ class BaseWebApp:
 
     def before_request(self, before_request_callable: BeforeRequestCallable) -> None:
         self.__app.before_request(before_request_callable)
+
+    def after_request(self, after_request_callable: AfterRequestCallable) -> None:
+        """Run a function on the response of every request, whichever controller served it."""
+        self.__app.after_request(after_request_callable)
+
+    def register_error_handler(
+        self,
+        exception: type[Exception] | int,
+        error_handler_callable: Callable[..., ResponseReturnValue | Awaitable[ResponseReturnValue]],
+    ) -> None:
+        """Handle an exception type or HTTP status code for every controller."""
+        self.__app.register_error_handler(exception, error_handler_callable)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+
+    def wrap_asgi_app(self, middleware: Callable[[ASGIFramework], ASGIFramework]) -> None:
+        """
+        Wrap the ASGI application in a middleware.
+
+        Unlike wrapping the whole app from the outside, the test client goes through
+        the middleware as well.
+        """
+        self.__app.asgi_app = middleware(self.__app.asgi_app)  # type: ignore[assignment, arg-type]
+
+    def build_url(
+        self,
+        endpoint: str,
+        *,
+        server_name: str | None = None,
+        scheme: str | None = None,
+        **values: Any,  # noqa: ANN401
+    ) -> str:
+        """
+        Build an absolute URL outside of a request, e.g. for a link in an email.
+
+        The host is `server_name`, or the one the app was created with. Values that are
+        not part of the route become query parameters.
+        """
+        host = cast(str | None, server_name or self.__app.config["SERVER_NAME"])  # pyright: ignore[reportUnknownMemberType]
+        if host is None:
+            error_message = "A server name is needed to build an absolute URL"
+            raise RuntimeError(error_message)
+
+        if scheme is None:
+            scheme = "https" if self.__app.config["PREFER_SECURE_URLS"] else "http"  # pyright: ignore[reportUnknownMemberType]
+
+        url_adapter = self.__app.url_map.bind(host, url_scheme=scheme)
+        return url_adapter.build(endpoint, values, force_external=True)
+
+    def test_request_context(
+        self,
+        *args: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401
+    ) -> RequestContext:
+        return self.__app.test_request_context(*args, **kwargs)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     def register_controllers(
         self,
