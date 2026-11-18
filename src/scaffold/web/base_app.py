@@ -225,6 +225,22 @@ class BaseWebApp:
         """Handle an exception type or HTTP status code for every controller."""
         self.__app.register_error_handler(exception, error_handler_callable)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
 
+    def add_url_rule(
+        self,
+        rule: str,
+        view_func: Callable[..., ResponseReturnValue | Awaitable[ResponseReturnValue]],
+        *,
+        endpoint: str | None = None,
+        **options: Any,  # noqa: ANN401
+    ) -> None:
+        """
+        Serve a plain function at `rule`, outside of any controller.
+
+        Controllers are the way to add routes to an app. This is for the odd route that
+        has no controller to live in, such as one a test adds to observe a request.
+        """
+        self.__app.add_url_rule(rule, endpoint=endpoint, view_func=view_func, **options)  # pyright: ignore[reportArgumentType]
+
     def wrap_asgi_app(self, middleware: Callable[[ASGIFramework], ASGIFramework]) -> None:
         """
         Wrap the ASGI application in a middleware.

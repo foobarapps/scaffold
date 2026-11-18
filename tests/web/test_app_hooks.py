@@ -3,7 +3,7 @@ from hypercorn.typing import ASGIFramework, ASGIReceiveCallable, ASGISendCallabl
 from quart import Response
 from quart.typing import ResponseReturnValue
 
-from scaffold.web import BaseController, BaseWebApp, controller, route
+from scaffold.web import BaseController, BaseWebApp, controller, register_csrf, route
 
 
 class TeapotError(Exception):
@@ -162,3 +162,34 @@ async def test_stacked_routes_share_one_endpoint() -> None:
     async with app.test_request_context("/"):
         assert GreetingsController.url_for("greetings.goodbye") == "/goodbye"
         assert GreetingsController.url_for("greetings.goodbye", name="Ada") == "/goodbye/Ada"
+
+
+@pytest.mark.asyncio
+async def test_plain_function_can_be_served_at_a_rule() -> None:
+    app = BaseWebApp("__main__", serve_assets=False)
+
+    async def ping() -> str:
+        return "pong"
+
+    app.add_url_rule("/ping", ping)
+
+    response = await app.test_client().get("/ping")
+
+    assert await response.get_data(as_text=True) == "pong"
+
+
+@pytest.mark.asyncio
+async def test_csrf_check_can_be_switched_off() -> None:
+    app = BaseWebApp("__main__", secret_key=b"secret", serve_assets=False)
+    register_csrf(app)
+
+    async def submit() -> str:
+        return "ok"
+
+    app.add_url_rule("/submit", submit, methods=["POST"])
+
+    assert (await app.test_client().post("/submit")).status_code == 400
+
+    app.config["CSRF_ENABLED"] = False
+
+    assert (await app.test_client().post("/submit")).status_code == 200

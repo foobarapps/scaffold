@@ -32,6 +32,10 @@ class CSRFProtect:
         app.before_request(self.protect)
 
     async def protect(self) -> None:
+        # CSRF_ENABLED = False switches the check off, for tests that post forms without a token
+        if not current_app.config.get("CSRF_ENABLED", True):  # pyright: ignore[reportUnknownMemberType]
+            return
+
         if request.method in SAFE_CSRF_METHODS:
             return
 
