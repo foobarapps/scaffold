@@ -202,6 +202,10 @@ class PostgresTaskQueue[T]:
             dumps=lambda obj: pydantic.TypeAdapter(task.__class__).dump_json(obj, warnings=warnings),
         )
 
+        # A process that only enqueues, such as a web app, never calls init(). Opening an
+        # open pool does nothing.
+        await self._connection_pool.open()
+
         async with self._connection_pool.connection() as conn:
             stmt = sql.SQL("""\
             INSERT INTO {table} (

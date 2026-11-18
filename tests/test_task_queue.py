@@ -808,3 +808,19 @@ async def test_strict_serialization_refuses_a_value_that_does_not_match_its_decl
             await queue.enqueue(CountTask(count="three"))  # type: ignore[arg-type]
 
         await queue.enqueue(CountTask(count=3))
+
+
+@pytest.mark.asyncio
+async def test_enqueue_opens_the_pool_itself(postgres_dsn: str, schema_name: str) -> None:
+    async with make_pool(postgres_dsn) as migration_pool:
+        await migrations.upgrade(migration_pool, schema_name=schema_name)
+
+    pool = make_pool(postgres_dsn)
+    try:
+        # No init(): a process that only enqueues does not have to check the schema version
+        await PostgresTaskQueue[ExampleTask](pool, schema_name=schema_name).enqueue(ExampleTask("from the web app"))
+    finally:
+        await pool.close()
+
+    rows = await fetch_all(postgres_dsn, sql.SQL("SELECT queue FROM {task}").format(task=table(schema_name)))
+    assert [row["queue"] for row in rows] == ["default"]
