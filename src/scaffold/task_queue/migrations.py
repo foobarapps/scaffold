@@ -54,6 +54,14 @@ class _Names:
     def pending_index(self) -> sql.Identifier:
         return sql.Identifier(f"{self.table_name}_pending_idx")
 
+    @property
+    def qualified_pending_index(self) -> sql.Identifier:
+        return sql.Identifier(self.schema_name, f"{self.table_name}_pending_idx")
+
+    @property
+    def queue_pending_index(self) -> sql.Identifier:
+        return sql.Identifier(f"{self.table_name}_queue_pending_idx")
+
 
 def _create_task_table(names: _Names) -> list[sql.Composed]:
     return [
@@ -106,10 +114,30 @@ def _add_retries_and_dead_lettering(names: _Names) -> list[sql.Composed]:
     ]
 
 
+def _add_queues_deliveries_and_metadata(names: _Names) -> list[sql.Composed]:
+    # Every column is nullable or has a constant default, so adding it does not rewrite the
+    # table, and code from before this migration keeps working against it.
+    return [
+        sql.SQL("ALTER TABLE {task} ADD COLUMN queue VARCHAR NOT NULL DEFAULT 'default'").format(task=names.task),
+        # How many times the task was handed to a worker, as opposed to `attempts`, which
+        # counts the handler runs that failed.
+        sql.SQL("ALTER TABLE {task} ADD COLUMN deliveries INTEGER NOT NULL DEFAULT 0").format(task=names.task),
+        # Overrides the queue's max_attempts for this task when set.
+        sql.SQL("ALTER TABLE {task} ADD COLUMN max_attempts INTEGER").format(task=names.task),
+        sql.SQL("ALTER TABLE {task} ADD COLUMN metadata JSONB").format(task=names.task),
+        sql.SQL("CREATE INDEX {index} ON {task} (queue, run_at) WHERE acknowledged_at IS NULL").format(
+            index=names.queue_pending_index,
+            task=names.task,
+        ),
+        sql.SQL("DROP INDEX {index}").format(index=names.qualified_pending_index),
+    ]
+
+
 # A migration's version is its position in this tuple, so it may only ever be appended to.
 MIGRATIONS: tuple[Callable[[_Names], list[sql.Composed]], ...] = (
     _create_task_table,
     _add_retries_and_dead_lettering,
+    _add_queues_deliveries_and_metadata,
 )
 
 LATEST_VERSION = len(MIGRATIONS)
