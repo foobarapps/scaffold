@@ -1,15 +1,27 @@
 import asyncio
 import hashlib
+import time
 from pathlib import Path
 
 import aiofiles
+from quart import url_for
+
+# How often, at most, the static folder is checked for changes when auto refresh is on.
+REFRESH_INTERVAL = 1.0
 
 
 class Assets:
-    def __init__(self, static_dir: Path) -> None:
+    def __init__(self, static_dir: Path, *, auto_refresh: bool = False) -> None:
+        """
+        `auto_refresh` re-reads the static folder when its files change, so an edit shows
+        up without a restart. It is meant for development: the check runs on the event loop.
+        """
         self.static_dir = static_dir
+        self.auto_refresh = auto_refresh
         self.file_map: dict[str, str] = {}
         self.reverse_map: dict[str, str] = {}
+        self._signature: tuple[int, int] | None = None
+        self._last_refresh_check = 0.0
 
     def _collect_files(self, static_dir: Path) -> list[Path]:
         return [file for file in static_dir.rglob("*") if file.is_file()]
@@ -42,22 +54,80 @@ class Assets:
 
     async def update_file_maps(self) -> None:
         """Update the file mapping dictionaries."""
+        self._signature = await asyncio.to_thread(self._read_signature)
         self.file_map, self.reverse_map = await self.create_file_map(self.static_dir)
 
     def get_original_filename(self, hashed_filename: str) -> str:
         """Get the original filename from a hashed filename."""
+        self._refresh_if_changed()
         return self.reverse_map.get(hashed_filename, hashed_filename)
 
     def get_hashed_filename(self, original_filename: str) -> str:
         """Get the hashed filename from an original filename."""
+        self._refresh_if_changed()
         return self.file_map.get(original_filename, original_filename)
 
+    def is_hashed_filename(self, filename: str) -> bool:
+        """Tell whether the filename carries a content hash, so its content can never change."""
+        self._refresh_if_changed()
+        return filename in self.reverse_map
+
     def get_assets_by_pattern(self, pattern: str) -> list[str]:
-        """Retrieve asset paths based on a pathlib glob pattern."""
-        return [file for file in self.file_map if Path(file).match(pattern)]
+        """Retrieve asset paths based on a pathlib glob pattern, sorted by path."""
+        self._refresh_if_changed()
+        return sorted(file for file in self.file_map if Path(file).match(pattern))
+
+    def url_for(self, path: str) -> str:
+        """The URL of an asset, with the content hash in it. Needs a request or app context."""
+        return url_for("assets.asset", path=self[path])
+
+    def read_manifest(self, path: str) -> list[str]:
+        """
+        The asset paths listed in a manifest file, in the order they are listed.
+
+        A manifest is a text file in the static folder with one asset path per line, for
+        assets that have to load in a given order (stylesheets, mostly). Blank lines and
+        lines starting with # are skipped. A manifest that does not exist lists nothing.
+        """
+        manifest_path = self.static_dir / path
+        if not manifest_path.is_file():
+            return []
+
+        lines = (line.strip() for line in manifest_path.read_text(encoding="utf-8").splitlines())
+        return [line for line in lines if line and not line.startswith("#")]
+
+    def _read_signature(self) -> tuple[int, int]:
+        files = self._collect_files(self.static_dir)
+        return len(files), max((file.stat().st_mtime_ns for file in files), default=0)
+
+    def _refresh_if_changed(self) -> None:
+        if not self.auto_refresh:
+            return
+
+        now = time.monotonic()
+        if now - self._last_refresh_check < REFRESH_INTERVAL:
+            return
+        self._last_refresh_check = now
+
+        signature = self._read_signature()
+        if signature == self._signature:
+            return
+
+        file_map: dict[str, str] = {}
+        reverse_map: dict[str, str] = {}
+        for file in self._collect_files(self.static_dir):
+            relative_path = file.relative_to(self.static_dir)
+            content_hash = hashlib.md5(file.read_bytes()).hexdigest()  # noqa: S324
+            hashed_path = relative_path.with_name(f"{file.stem}.{content_hash}{file.suffix}")
+            file_map[str(relative_path)] = str(hashed_path)
+            reverse_map[str(hashed_path)] = str(relative_path)
+
+        self._signature = signature
+        self.file_map, self.reverse_map = file_map, reverse_map
 
     def __getitem__(self, path: str) -> str:
         """Retrieve a hashed filename by the relative path."""
+        self._refresh_if_changed()
         if path not in self.file_map:
             message = f"Asset not found for path: {path}"
             raise KeyError(message)
@@ -65,4 +135,5 @@ class Assets:
 
     def __contains__(self, path: str) -> bool:
         """Check if an asset path exists."""
+        self._refresh_if_changed()
         return path in self.file_map

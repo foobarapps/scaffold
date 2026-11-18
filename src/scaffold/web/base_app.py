@@ -15,6 +15,7 @@ from quart import (
     Request,
     ResponseReturnValue,
     Websocket,
+    abort,
     g,
     request,
     send_from_directory,  # type: ignore
@@ -33,6 +34,8 @@ from quart.typing import (
 
 from .assets import Assets
 from .base_controller import BaseController
+
+ONE_YEAR_IN_SECONDS = 31_536_000
 
 
 @runtime_checkable
@@ -98,6 +101,8 @@ class BaseWebApp:
         server_name: str | None = None,
         propagate_exceptions: bool = False,
         serve_assets: bool = True,
+        refresh_assets: bool = False,
+        static_folder: str | Path | None = None,
     ) -> None:
         """
         `server_name` makes routes match that host only and is the host of URLs built
@@ -105,8 +110,15 @@ class BaseWebApp:
 
         `serve_assets` can be turned off by an app that brings its own asset pipeline;
         the /assets route and the `assets` template variable are then left to the app.
+
+        `refresh_assets` picks up changed files in the static folder without a restart.
+        It is meant for development.
+
+        `static_folder` defaults to the `static` folder of the root package.
         """
         self.__app = Quart(root_package_name)
+        if static_folder is not None:
+            self.__app.static_folder = str(static_folder)
 
         # TODO expose all config vars (https://flask.palletsprojects.com/en/stable/config/) through the constructor
         self.__app.config.update(  # type: ignore
@@ -127,6 +139,7 @@ class BaseWebApp:
 
         # Assets will be initialized in setup
         self.__assets: Assets | None = None
+        self.__refresh_assets = refresh_assets
 
         # First, so a health check never builds a controller or reaches routing.
         self.__app.before_request(self.__answer_health_check)
@@ -484,7 +497,7 @@ class BaseWebApp:
 
         # Initialize assets container
         static_dir = Path(self.__app.static_folder)
-        self.__assets = Assets(static_dir)
+        self.__assets = Assets(static_dir, auto_refresh=self.__refresh_assets)
         await self.__assets.update_file_maps()
 
     async def __serve_assets(self, path: str) -> ResponseReturnValue:
@@ -498,7 +511,28 @@ class BaseWebApp:
             raise RuntimeError(error_message)
 
         original_filename = self.__assets.get_original_filename(path)
-        return await send_from_directory(self.__app.static_folder, original_filename)
+
+        try:
+            is_file = (Path(self.__app.static_folder) / original_filename).is_file()
+        except OSError:
+            # A name the file system cannot even look up, e.g. one that is too long
+            is_file = False
+        if not is_file:
+            abort(404)
+
+        # A hashed name never serves different content, so it can be cached for good.
+        # A plain name has to be revalidated, because the file behind it can change.
+        is_hashed = self.__assets.is_hashed_filename(path)
+        response = await send_from_directory(
+            self.__app.static_folder,
+            original_filename,
+            conditional=True,
+            cache_timeout=ONE_YEAR_IN_SECONDS if is_hashed else 0,
+        )
+        response.headers["Cache-Control"] = (
+            f"public, max-age={ONE_YEAR_IN_SECONDS}, immutable" if is_hashed else "public, max-age=0, must-revalidate"
+        )
+        return response
 
     def __template_context(self) -> dict[str, Any]:
         """Inject assets into template context."""
