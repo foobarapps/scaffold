@@ -40,7 +40,7 @@ async def test_after_request_runs_for_every_controller() -> None:
         response.headers["X-Marked"] = "yes"
         return response
 
-    app.after_request(mark)
+    app.after_request(mark)  # pyright: ignore[reportArgumentType]
 
     response = await app.test_client().get("/hello/Ada")
 

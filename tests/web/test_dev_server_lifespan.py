@@ -17,7 +17,7 @@ async def test_startup_is_delivered_once_and_shutdown_only_when_the_server_stops
         # Asks for the next event before startup is over, as a middleware that fans the
         # events out to several apps does. It must wait for the shutdown, not get a
         # second startup.
-        next_event = asyncio.create_task(receive())
+        next_event = asyncio.ensure_future(receive())
         asked_again.set()
         await send({"type": "lifespan.startup.complete"})
         received.append((await next_event)["type"])

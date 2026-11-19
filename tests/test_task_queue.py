@@ -709,9 +709,9 @@ async def test_task_delivered_too_many_times_is_dead_lettered(
     await queue.enqueue(ExampleTask("kills its worker"), visibility_timeout=0)
 
     # Two workers take the task and die before they can report anything
-    assert await queue._get_task() is not None  # noqa: SLF001
-    assert await queue._get_task() is not None  # noqa: SLF001
-    assert await queue._get_task() is None  # noqa: SLF001
+    assert await queue._get_task() is not None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert await queue._get_task() is not None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert await queue._get_task() is None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
     failures = await fetch_all(
         postgres_dsn,
@@ -757,8 +757,8 @@ async def test_stale_delivery_cannot_acknowledge_or_renew_after_redelivery(queue
     queue = await queue_factory()
     await queue.enqueue(ExampleTask("contended"), visibility_timeout=0)
 
-    first = await queue._get_task()  # noqa: SLF001
-    second = await queue._get_task()  # noqa: SLF001
+    first = await queue._get_task()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    second = await queue._get_task()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert first is not None
     assert second is not None
     assert (first.info.delivery, second.info.delivery) == (1, 2)
@@ -986,5 +986,5 @@ def test_fake_queue_takes_what_the_real_one_takes() -> None:
     assert (queue.enqueued[0].queue, queue.enqueued[0].max_attempts) == ("reports", 1)
     assert queue.enqueued[0].metadata == {"user_id": "42"}
     assert inspect.signature(queue.enqueue).parameters.keys() == inspect.signature(
-        PostgresTaskQueue.enqueue,
+        PostgresTaskQueue.enqueue,  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
     ).parameters.keys() - {"self"}

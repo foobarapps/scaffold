@@ -16,7 +16,7 @@ class SentEmail:
     message: MimeMessage
     sender: str
     recipients: list[str]
-    options: dict[str, object] = dataclasses.field(default_factory=dict)
+    options: dict[str, object] = dataclasses.field(default_factory=dict[str, object])
 
 
 class FakeSmtp:

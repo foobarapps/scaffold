@@ -53,11 +53,11 @@ def make_app(*, login_view: str | None = "sign_in", skip_assets: bool = False) -
 
     async def sign_in() -> str:
         if request.method == "POST":
-            form = await request.form
+            form = await request.form  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             signed_in = login_user(
-                USERS[form.get("user", "1")],
-                remember=form.get("remember") == "1",
-                force=form.get("force") == "1",
+                USERS[form.get("user", "1")],  # pyright: ignore[reportUnknownMemberType]
+                remember=form.get("remember") == "1",  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
+                force=form.get("force") == "1",  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
             )
             return "signed in" if signed_in else "refused"
         return "sign in page"
@@ -132,7 +132,7 @@ async def test_guarded_view_answers_unauthorized_without_a_login_view() -> None:
 
 async def test_user_who_no_longer_exists_is_anonymous() -> None:
     client = make_app().test_client()
-    async with client.session_transaction() as session:
+    async with client.session_transaction() as session:  # pyright: ignore[reportUnknownMemberType]
         session["_user_id"] = "999"
 
     assert await text(client, "/whoami") == "anonymous"
@@ -144,7 +144,7 @@ async def test_remember_me_signs_the_user_in_after_the_session_is_gone() -> None
     response = await client.post("/sign-in", form={"remember": "1"})
     assert REMEMBER_COOKIE_NAME in response.headers["Set-Cookie"]
 
-    async with client.session_transaction() as session:
+    async with client.session_transaction() as session:  # pyright: ignore[reportUnknownMemberType]
         session.clear()
 
     assert await text(client, "/whoami") == "Eva"
@@ -164,7 +164,7 @@ async def test_signing_out_clears_the_remember_cookie() -> None:
     response = await client.post("/sign-out")
 
     assert f"{REMEMBER_COOKIE_NAME}=;" in response.headers["Set-Cookie"]
-    async with client.session_transaction() as session:
+    async with client.session_transaction() as session:  # pyright: ignore[reportUnknownMemberType]
         session.clear()
     assert await text(client, "/whoami") == "anonymous"
 

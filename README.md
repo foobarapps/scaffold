@@ -788,3 +788,7 @@ docker compose up
 ```
 
 Now the web app should be accessible at `app.localhost`.
+
+## Releases
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release and how to upgrade.
