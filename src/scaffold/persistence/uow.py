@@ -1,7 +1,10 @@
+import logging
 import typing
 from types import TracebackType
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 
 class UnitOfWorkRepository(typing.Protocol):
@@ -45,7 +48,12 @@ class BaseSqlUnitOfWork:
             # The unit of work cleans up after itself, also when it is not used as a context
             # manager, and is closed: it was one attempt at one transaction.
             self._close()
-            await self.session.rollback()
+            try:
+                await self.session.rollback()
+            except Exception:
+                # The caller gets the error of the commit, which is the one that says what
+                # went wrong. The session is beyond saving and is discarded when it is closed.
+                logger.exception("Could not roll back after a failed commit")
             raise
 
         self._close()

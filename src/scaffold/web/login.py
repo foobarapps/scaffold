@@ -167,7 +167,8 @@ class LoginManager[U: AuthenticatedUser]:
 
         if operation == REMEMBER_SET and USER_ID_SESSION_KEY in session:
             duration = cast(
-                "datetime.timedelta | int", config.get("REMEMBER_COOKIE_DURATION", REMEMBER_COOKIE_DURATION),
+                "datetime.timedelta | int",
+                config.get("REMEMBER_COOKIE_DURATION", REMEMBER_COOKIE_DURATION),
             )
             if not isinstance(duration, datetime.timedelta):
                 duration = datetime.timedelta(seconds=duration)

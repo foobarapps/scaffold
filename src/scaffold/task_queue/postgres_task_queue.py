@@ -34,6 +34,13 @@ class _Delivery[T]:
     task: T
 
 
+class TaskRunTimeExceededError(TimeoutError):
+    """A handler ran for longer than the queue's `max_run_time` and was cancelled."""
+
+    def __init__(self, task_id: uuid.UUID, max_run_time: float | None) -> None:
+        super().__init__(f"Task {task_id} ran for over {max_run_time} seconds and was cancelled")
+
+
 class PostgresTaskQueue[T]:
     """
     A task queue kept in a Postgres table.
@@ -88,9 +95,10 @@ class PostgresTaskQueue[T]:
         `on_task_start` is called with the task's info right before its handler runs, e.g.
         to tell an error tracker who the task was enqueued for.
 
-        `max_run_time` is how many seconds `consume()` keeps renewing the lease of a running
-        task. Past that the handler is taken to be hung: its lease runs out and the task is
-        handed out again. Without it a lease is renewed for as long as the handler runs.
+        `max_run_time` is how many seconds a handler may run. Past that it is taken to be
+        hung: it is cancelled and the task counts as failed, so it is retried or dead-lettered
+        like after any other failure. Without it a handler may run for as long as it likes,
+        and under `consume()` its lease is renewed all the while.
         """
         self._handler_factories: dict[type[T], Callable[[], HandlerProtocol[T]]] = {}
         self._connection_pool = connection_pool
@@ -105,6 +113,7 @@ class PostgresTaskQueue[T]:
         self._strict_serialization = strict_serialization
         self._on_task_start = on_task_start
         self._max_run_time = max_run_time
+        self._handed_out: dict[uuid.UUID, TaskInfo] = {}
 
     async def init(self) -> None:
         """Open the pool and refuse to start against a schema older than this build needs.
@@ -195,13 +204,16 @@ class PostgresTaskQueue[T]:
         escaping exception would cancel every sibling task and end the consume loop --
         one bad task would take down the whole worker.
         """
-        await self._run(
-            _Delivery(
-                TaskInfo(id=task_id, queue=DEFAULT_QUEUE, delivery=None, attempts=0, visibility_timeout=0),
-                task,
-            ),
-            renew_lease=False,
+        # What `handle_tasks()` knows about the delivery. Somebody calling this directly has
+        # only the id, so the queue cannot tell their delivery from a later one.
+        info = self._handed_out.pop(task_id, None) or TaskInfo(
+            id=task_id,
+            queue=DEFAULT_QUEUE,
+            delivery=None,
+            attempts=0,
+            visibility_timeout=0,
         )
+        await self._run(_Delivery(info, task), renew_lease=False)
 
     async def _run(
         self,
@@ -220,14 +232,20 @@ class PostgresTaskQueue[T]:
         )
 
         error: Exception | None = None
+        run_time: asyncio.Timeout | None = None
         try:
             if self._on_task_start is not None:
                 self._on_task_start(info)
             handler = self._handler_factories[type(delivery.task)]()
             # TODO check if whether the handler is a coroutine function
-            await handler.handle_task(delivery.task)
+            async with asyncio.timeout(self._max_run_time) as run_time:
+                await handler.handle_task(delivery.task)
         except Exception as exc:  # noqa: BLE001
             error = exc
+            if isinstance(exc, TimeoutError) and run_time is not None and run_time.expired():
+                # The handler was cancelled, so its consumer is free again and the task
+                # does not run twice at once. From here it is a failure like any other.
+                error = TaskRunTimeExceededError(info.id, self._max_run_time)
         finally:
             # Stopped before the outcome is recorded: a failed task gives its lease up, and
             # a renewal after that would report the lease as lost.
@@ -262,16 +280,7 @@ class PostgresTaskQueue[T]:
         on_progress: Callable[[], None] | None,
     ) -> None:
         interval = max(info.visibility_timeout / LEASE_RENEWALS_PER_TIMEOUT, 0.05)
-        started = asyncio.get_running_loop().time()
         while not await wait_for(handler_done, interval):
-            if self._max_run_time is not None and asyncio.get_running_loop().time() - started >= self._max_run_time:
-                # Probably hung. Without a renewal the lease runs out and the task is handed out again.
-                logger.error(
-                    "Task %s has been running for over %s seconds, giving its lease up",
-                    info.id,
-                    self._max_run_time,
-                )
-                return
             try:
                 if not await self.extend_lease(info):
                     logger.warning("Lost the lease on task %s; another worker may pick it up", info.id)
@@ -388,6 +397,8 @@ class PostgresTaskQueue[T]:
         """
         async with asyncio.TaskGroup() as tg:
             async for delivery in self._deliveries(queue):
+                # Kept for `handle_task()` to pick up, which only gets the id and the task
+                self._handed_out[delivery.info.id] = delivery.info
                 tg.create_task(self.handle_task(delivery.info.id, delivery.task))
 
     async def consume(

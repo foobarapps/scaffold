@@ -69,7 +69,8 @@ answers 404. `get_assets_by_pattern` returns its result sorted.
   - Named queues: `enqueue(..., queue=)` and `consume(queue, stop=, concurrency=, on_progress=)`.
   - `consume` runs a fixed number of consumers, renews the lease of a running task, reports
     progress, finishes the tasks in flight before it stops, and fails if a consumer dies.
-  - `max_run_time` bounds how long a lease is renewed.
+  - `max_run_time` bounds how long a handler may run. Past it the handler is cancelled and
+    the task counts as failed.
   - `max_attempts` per task, `max_deliveries` per queue, `strict_serialization`, and task
     `metadata` handed to `on_task_start`.
   - A task that cannot be deserialized is dead-lettered.

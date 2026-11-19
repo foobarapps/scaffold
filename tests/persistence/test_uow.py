@@ -148,3 +148,17 @@ async def test_rollback_in_an_error_handler_keeps_the_original_error() -> None:
         await commit_or_roll_back()
 
     session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failing_rollback_does_not_hide_the_error_of_the_commit() -> None:
+    session = AsyncMock()
+    session.commit.side_effect = RuntimeError("duplicate key")
+    session.rollback.side_effect = ConnectionError("the connection is gone")
+    uow = BaseSqlUnitOfWork(session)
+
+    with pytest.raises(RuntimeError, match="duplicate key"):
+        await uow.commit()
+
+    with pytest.raises(UnitOfWorkClosedError):
+        await uow.commit()

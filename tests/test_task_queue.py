@@ -871,29 +871,57 @@ async def test_consume_fails_when_a_consumer_dies(queue_factory: QueueFactory, m
 
 
 @pytest.mark.asyncio
-async def test_hung_handler_loses_its_lease_after_the_maximum_run_time(queue_factory: QueueFactory) -> None:
-    queue = await queue_factory(max_run_time=1.0, poll_interval=0.1)
-    runs = 0
-    second_run = asyncio.Event()
-    release = asyncio.Event()
+async def test_handler_past_the_maximum_run_time_is_cancelled_and_the_task_fails(
+    queue_factory: QueueFactory,
+    postgres_dsn: str,
+    schema_name: str,
+) -> None:
+    queue = await queue_factory(max_run_time=0.5, max_attempts=2, retry_backoff=0.01, poll_interval=0.1)
+    running = 0
+    most_running = 0
+    cancelled = 0
+    handled_after: list[str] = []
 
     async def handle(task: ExampleTask) -> None:
-        nonlocal runs
-        runs += 1
-        if runs == 1:
+        nonlocal running, most_running, cancelled
+        if task.payload == "next":
+            handled_after.append(task.payload)
+            return
+        running += 1
+        most_running = max(most_running, running)
+        try:
             # Hangs for good, as far as the queue can tell
-            await release.wait()
-        else:
-            second_run.set()
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled += 1
+            raise
+        finally:
+            running -= 1
 
     queue.register(ExampleTask, handler_factory(handle))
-    await queue.enqueue(ExampleTask("hangs"), visibility_timeout=1, max_attempts=1)
+    await queue.enqueue(ExampleTask("hangs"), visibility_timeout=1)
+    await queue.enqueue(ExampleTask("next"), visibility_timeout=1)
 
-    async with consuming(queue, concurrency=2):
-        await asyncio.wait_for(second_run.wait(), timeout=30)
-        release.set()
+    async def failures() -> list[dict[str, Any]]:
+        return await fetch_all(
+            postgres_dsn,
+            sql.SQL("SELECT attempts, last_error FROM {failure}").format(failure=table(schema_name, "task_failure")),
+        )
 
-    assert runs == 2
+    async def dead_lettered() -> bool:
+        return len(await failures()) == 1
+
+    # One consumer: it has to come free again, or nothing else would ever be handled
+    async with consuming(queue, concurrency=1):
+        await eventually(dead_lettered)
+        await eventually(lambda: handled_after == ["next"])
+
+    # Both attempts were cancelled, and never ran at the same time
+    assert cancelled == 2
+    assert most_running == 1
+    recorded = await failures()
+    assert recorded[0]["attempts"] == 2
+    assert "TaskRunTimeExceededError" in recorded[0]["last_error"]
 
 
 @pytest.mark.asyncio
@@ -988,3 +1016,81 @@ def test_fake_queue_takes_what_the_real_one_takes() -> None:
     assert inspect.signature(queue.enqueue).parameters.keys() == inspect.signature(
         PostgresTaskQueue.enqueue,  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
     ).parameters.keys() - {"self"}
+
+
+@pytest.mark.asyncio
+async def test_handle_tasks_knows_the_delivery_it_is_handling(queue_factory: QueueFactory) -> None:
+    started: list[TaskInfo] = []
+    queue = await queue_factory(on_task_start=started.append)
+    handled = asyncio.Event()
+
+    async def handle(task: ExampleTask) -> None:
+        handled.set()
+
+    queue.register(ExampleTask, handler_factory(handle))
+    await queue.enqueue(ExampleTask("for a user"), queue="reports", metadata={"user_id": "42"})
+
+    async with running_worker(queue):
+        await asyncio.wait_for(handled.wait(), timeout=30)
+
+    assert (started[0].queue, started[0].delivery, started[0].metadata) == ("reports", 1, {"user_id": "42"})
+
+
+@pytest.mark.asyncio
+async def test_handle_tasks_does_not_let_a_superseded_delivery_acknowledge(
+    queue_factory: QueueFactory,
+    postgres_dsn: str,
+    schema_name: str,
+) -> None:
+    queue = await queue_factory()
+    first_run_may_finish = asyncio.Event()
+    second_run_started = asyncio.Event()
+    runs = 0
+
+    async def handle(task: ExampleTask) -> None:
+        nonlocal runs
+        runs += 1
+        if runs == 1:
+            # Outlives its visibility timeout, so the task is handed out again meanwhile
+            await first_run_may_finish.wait()
+        else:
+            second_run_started.set()
+            await asyncio.Event().wait()
+
+    queue.register(ExampleTask, handler_factory(handle))
+    await queue.enqueue(ExampleTask("contended"), visibility_timeout=1)
+
+    async with running_worker(queue):
+        await asyncio.wait_for(second_run_started.wait(), timeout=30)
+        first_run_may_finish.set()
+        await asyncio.sleep(0.5)
+
+        rows = await fetch_all(
+            postgres_dsn,
+            sql.SQL("SELECT acknowledged_at, deliveries FROM {task}").format(task=table(schema_name)),
+        )
+
+    # The first delivery finished, but the task belongs to the second one by then
+    assert rows[0]["deliveries"] == 2
+    assert rows[0]["acknowledged_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_handle_task_called_directly_still_works_without_a_delivery(queue_factory: QueueFactory) -> None:
+    started: list[TaskInfo] = []
+    queue = await queue_factory(on_task_start=started.append)
+    handled: list[str] = []
+
+    async def handle(task: ExampleTask) -> None:
+        handled.append(task.payload)
+
+    queue.register(ExampleTask, handler_factory(handle))
+    await queue.enqueue(ExampleTask("direct"))
+    delivery = await queue._get_task()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert delivery is not None
+
+    await queue.handle_task(delivery.info.id, delivery.task)
+
+    assert handled == ["direct"]
+    assert started[0].delivery is None
+    assert await queue._get_task() is None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]

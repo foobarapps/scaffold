@@ -1,6 +1,6 @@
 from . import migrations
 from .fake_task_queue import EnqueuedTask, GenericFakeTaskQueue
-from .postgres_task_queue import PostgresTaskQueue
+from .postgres_task_queue import PostgresTaskQueue, TaskRunTimeExceededError
 from .task import DEFAULT_QUEUE, HandlerProtocol, TaskInfo
 
 __all__ = [
@@ -10,5 +10,6 @@ __all__ = [
     "HandlerProtocol",
     "PostgresTaskQueue",
     "TaskInfo",
+    "TaskRunTimeExceededError",
     "migrations",
 ]
