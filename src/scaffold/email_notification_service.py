@@ -2,8 +2,9 @@ import abc
 import dataclasses
 import inspect
 import pathlib
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, cast
+from urllib.parse import quote
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -97,5 +98,32 @@ class EmailNotificationService:
             # Host header -- and background tasks inherit that request context -- so a client
             # could otherwise have a password-reset link sent out pointing at its own host.
             # build_url only ever uses the configured server name, and raises without one.
-            env.globals["url_for"] = self.web_app.build_url  # pyright: ignore[reportArgumentType]
+            env.globals["url_for"] = _external_url_for(self.web_app)  # pyright: ignore[reportArgumentType]
             return template.render(**context)
+
+
+def _external_url_for(web_app: BaseWebApp) -> Callable[..., str]:
+    """
+    A url_for for email templates, taking Quart's arguments but always building with build_url.
+
+    The host is never one a template or a request supplies: it is the app's server name.
+    """
+
+    def url_for(endpoint: str, **values: Any) -> str:  # noqa: ANN401
+        # Links in an email are external whatever the template asks; the method only picks
+        # between rules and does not change the URL that is built.
+        values.pop("_external", None)
+        values.pop("_method", None)
+        anchor = values.pop("_anchor", None)
+        scheme = cast("str | None", values.pop("_scheme", None))
+        for reserved in ("server_name", "scheme"):
+            if reserved in values:
+                message = f"url_for in an email template does not take {reserved!r}: the host is the app's server name"
+                raise TypeError(message)
+
+        url = web_app.build_url(endpoint, scheme=scheme, **values)
+        if anchor is not None:
+            url += "#" + quote(str(anchor))
+        return url
+
+    return url_for

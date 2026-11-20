@@ -172,3 +172,47 @@ async def call_asgi(app: BaseWebApp, path: str) -> AsgiResponse:
 
     await app(scope, receive, send)
     return response
+
+
+@pytest.mark.asyncio
+async def test_an_exception_escaping_request_handling_is_a_bare_500() -> None:
+    # Whatever lets an exception escape -- here an error handler that fails itself -- the app
+    # answers a plain 500 rather than leaving it to Quart, which, depending on its version,
+    # sends its debug traceback page outside debug mode.
+    def broken_handler(error: Exception) -> ResponseReturnValue:
+        message = "the error page could not be rendered"
+        raise RuntimeError(message)
+
+    async def failing_view() -> ResponseReturnValue:
+        message = "the database is down"
+        raise RuntimeError(message)
+
+    app = BaseWebApp("__main__", secret_key=b"test-secret-key")
+    app.add_url_rule("/fail", failing_view)
+    app.register_error_handler(Exception, broken_handler)
+
+    response = await call_asgi(app, "/fail")
+
+    assert response.status == 500
+    assert response.body == b"Internal Server Error"
+
+
+@pytest.mark.asyncio
+async def test_exceptions_still_reach_quart_when_asked_to_propagate() -> None:
+    # In testing (and debug) mode the exception goes through to Quart, which shows it.
+    def broken_handler(error: Exception) -> ResponseReturnValue:
+        message = "the error page could not be rendered"
+        raise RuntimeError(message)
+
+    async def failing_view() -> ResponseReturnValue:
+        message = "the database is down"
+        raise RuntimeError(message)
+
+    app = BaseWebApp("__main__", secret_key=b"test-secret-key", propagate_exceptions=True)
+    app.add_url_rule("/fail", failing_view)
+    app.register_error_handler(Exception, broken_handler)
+
+    response = await call_asgi(app, "/fail")
+
+    assert response.status == 500
+    assert b"the error page could not be rendered" in response.body

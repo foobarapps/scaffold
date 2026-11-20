@@ -10,6 +10,9 @@ from psycopg_pool import AsyncConnectionPool
 
 from scaffold.pub_sub import PostgresPubSubService
 
+# Put in the notification stream to make the listening connection fail, as a dropped one does
+CONNECTION_LOST = "<connection lost>"
+
 
 class FakeConnection:
     def __init__(self, notifications: "asyncio.Queue[str]") -> None:
@@ -23,11 +26,16 @@ class FakeConnection:
 
     async def notifies(self) -> AsyncIterator[SimpleNamespace]:
         while True:
-            yield SimpleNamespace(payload=await self._notifications.get())
+            payload = await self._notifications.get()
+            if payload is CONNECTION_LOST:
+                message = "the server closed the connection"
+                raise ConnectionError(message)
+            yield SimpleNamespace(payload=payload)
 
 
 class FakePool:
-    """Stands in for psycopg_pool: every connection sees the same stream of NOTIFY payloads.
+    """
+    Stands in for psycopg_pool: every connection sees the same stream of NOTIFY payloads.
 
     Leaving a connection takes an event-loop turn, as returning one to a real pool does, which
     is what opens the window between cancelling a listener and it finishing.
@@ -51,7 +59,7 @@ class FakePool:
 
 
 def make_service(pool: FakePool) -> PostgresPubSubService:
-    return PostgresPubSubService(cast(AsyncConnectionPool[Any], pool))
+    return PostgresPubSubService(cast(AsyncConnectionPool[Any], pool), reconnect_delay=0)
 
 
 async def collect(service: PostgresPubSubService, channel: str, into: list[str]) -> None:
@@ -127,4 +135,28 @@ async def test_resubscribing_during_teardown_keeps_exactly_one_listener(
     await settle()
 
     # With every subscriber gone, no listener is left holding a pooled connection.
+    assert pool.open_connections == 0
+
+
+@pytest.mark.asyncio
+async def test_listener_listens_again_after_its_connection_fails() -> None:
+    # A dropped connection used to end the one listener, leaving every subscriber waiting
+    # forever with no error.
+    pool = FakePool()
+    service = make_service(pool)
+    received: list[str] = []
+    subscriber = asyncio.create_task(collect(service, "room", received))
+    await settle()
+
+    pool.notify(message("room", "before"))
+    pool.notify(CONNECTION_LOST)
+    await settle()
+    pool.notify(message("room", "after"))
+    await settle()
+
+    assert received == ["before", "after"]
+    subscriber.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await subscriber
+    await settle()
     assert pool.open_connections == 0

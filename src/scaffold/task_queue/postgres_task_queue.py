@@ -3,6 +3,7 @@ import contextlib
 import dataclasses
 import datetime
 import logging
+import sys
 import traceback
 import uuid
 from collections.abc import AsyncGenerator, Callable, Mapping
@@ -100,6 +101,8 @@ class PostgresTaskQueue[T]:
         and under `consume()` its lease is renewed all the while.
         """
         self._handler_factories: dict[type[T], Callable[[], HandlerProtocol[T]]] = {}
+        # The registered task types by the (module, class) names a row stores
+        self._task_types: dict[tuple[str, str], type[T]] = {}
         self._connection_pool = connection_pool
         self._schema_name = schema_name
         self._table_name = table_name
@@ -392,7 +395,9 @@ class PostgresTaskQueue[T]:
 
         This is the queue as it worked before `consume()`: no lease renewal, so a task that
         runs longer than its visibility timeout is handed out again. Tasks go through
-        `handle_task()`, which a subclass may override.
+        `handle_task()`, which a subclass may override. Only registered task types are
+        decoded, so a subclass still has to `register()` every type it handles; a task of any
+        other type is dead-lettered.
 
         At most `concurrency` tasks run at a time, and a task is only leased once one of them
         has finished. Without a limit, a burst of due tasks is leased all at once and every
@@ -402,27 +407,24 @@ class PostgresTaskQueue[T]:
         if concurrency is not None and concurrency < 1:
             message = "concurrency must be at least 1, or None for no limit"
             raise ValueError(message)
-        slots = asyncio.Semaphore(concurrency) if concurrency is not None else None
+        slots = asyncio.Semaphore(concurrency if concurrency is not None else sys.maxsize)
 
         async def handle_in_slot(delivery: _Delivery[T]) -> None:
             try:
                 await self.handle_task(delivery.info.id, delivery.task)
             finally:
-                if slots is not None:
-                    slots.release()
+                slots.release()
 
         async with asyncio.TaskGroup() as tg:
             deliveries = aiter(self._deliveries(queue))
             while True:
                 # Take a slot before leasing the next task, so the worker never holds more
                 # tasks than it is running.
-                if slots is not None:
-                    await slots.acquire()
+                await slots.acquire()
                 try:
                     delivery = await anext(deliveries)
                 except BaseException:
-                    if slots is not None:
-                        slots.release()
+                    slots.release()
                     raise
                 # Kept for `handle_task()` to pick up, which only gets the id and the task
                 self._handed_out[delivery.info.id] = delivery.info
@@ -659,11 +661,11 @@ class PostgresTaskQueue[T]:
         would let whoever can write to the table import any module the worker can reach and,
         through pydantic's validation of a function's arguments, call any function in it.
         """
-        for task_class in self._handler_factories:
-            if task_class.__module__ == module_name and task_class.__name__ == class_name:
-                return task_class
-        message = f"No handler is registered for task type {module_name}.{class_name}"
-        raise LookupError(message)
+        try:
+            return self._task_types[module_name, class_name]
+        except KeyError:
+            message = f"No handler is registered for task type {module_name}.{class_name}"
+            raise LookupError(message) from None
 
     def register(
         self,
@@ -671,6 +673,7 @@ class PostgresTaskQueue[T]:
         handler_factory: Callable[[], HandlerProtocol[T]],
     ) -> None:
         self._handler_factories[task_type] = handler_factory
+        self._task_types[task_type.__module__, task_type.__name__] = task_type
 
     @property
     def _full_table_identifier(self) -> sql.Identifier:

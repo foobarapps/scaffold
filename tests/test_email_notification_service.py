@@ -62,10 +62,38 @@ async def test_email_links_use_the_configured_host(templates_dir: pathlib.Path) 
 async def test_email_links_never_take_their_host_from_the_request(templates_dir: pathlib.Path) -> None:
     # Without a configured host, the only host available is the client-supplied Host header,
     # which would let a client have a password-reset link sent out pointing at its own server.
+    # Rendering refuses instead, so no link to the client's host is ever produced.
     rendered: list[str] = []
     app = make_app(None, rendered, templates_dir)
-    service = make_service(app, templates_dir)
 
-    with pytest.raises(RuntimeError, match="server name"):
-        await service.render_template("reset.txt")
+    response = await app.test_client().post("/account/forgot", headers={"Host": "attacker.invalid"})
+
+    assert response.status_code == 500
     assert rendered == []
+    assert b"attacker.invalid" not in await response.get_data(as_text=False)
+
+
+@pytest.mark.asyncio
+async def test_email_url_for_takes_quarts_arguments(tmp_path: pathlib.Path) -> None:
+    # Templates written for Quart's url_for keep working: _external is implied, _scheme and
+    # _anchor are honoured, and none of them leaks into the query string.
+    (tmp_path / "reset.txt").write_text(
+        "Reset: {{ url_for('account.reset', token='T0K', _external=True, _scheme='https', _anchor='top') }}",
+    )
+    rendered: list[str] = []
+    app = make_app("app.example.test", rendered, tmp_path)
+
+    response = await app.test_client().post("/account/forgot", headers={"Host": "app.example.test"})
+
+    assert response.status_code == 200
+    assert rendered == ["Reset: https://app.example.test/account/reset/T0K#top"]
+
+
+@pytest.mark.asyncio
+async def test_email_template_cannot_choose_the_host(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "reset.txt").write_text("{{ url_for('account.reset', token='T0K', server_name='attacker.invalid') }}")
+    app = BaseWebApp("__main__", secret_key=b"test-secret-key", server_name="app.example.test")
+    service = make_service(app, tmp_path)
+
+    with pytest.raises(TypeError, match="server_name"):
+        await service.render_template("reset.txt")

@@ -1,10 +1,11 @@
 import inspect
+import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from functools import wraps
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Any, Concatenate, Protocol, cast, runtime_checkable
+from typing import Any, Concatenate, Final, Protocol, cast, runtime_checkable
 
 from flask.sansio.blueprints import Blueprint as SansioBlueprint  # type: ignore
 from flask.templating import Environment
@@ -13,6 +14,7 @@ from quart import (
     Blueprint,
     Quart,
     Request,
+    Response,
     ResponseReturnValue,
     Websocket,
     abort,
@@ -36,6 +38,9 @@ from .assets import Assets
 from .base_controller import BaseController
 
 ONE_YEAR_IN_SECONDS = 31_536_000
+INTERNAL_SERVER_ERROR: Final = ("Internal Server Error", 500)
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -130,6 +135,8 @@ class BaseWebApp:
         # FIXME hotfix until https://github.com/pallets/quart/issues/383 gets fixed
         if propagate_exceptions:
             self.__app.testing = True
+
+        self.__app.handle_request = self.__contain_request_errors(self.__app.handle_request)  # type: ignore[method-assign, assignment]
 
         self.__controller_factories: dict[
             type[BaseController],
@@ -381,43 +388,65 @@ class BaseWebApp:
         R,
     ](
         func: Callable[Concatenate[S, P], R] | Callable[Concatenate[S, P], Awaitable[R]],
+        *,
+        without_controller: R | None = None,
     ) -> Callable[P, R] | Callable[P, Awaitable[R]]:
+        """
+        Bind a controller callback to the controller of the current request.
+
+        `without_controller` is returned instead of calling the callback when the request has
+        no controller. Error handlers need it: the controller is created in a before_request
+        hook, so if its factory raises, the blueprint's error handlers run with no controller,
+        and one that raised again would be called once more for the resulting 500.
+        """
+
+        def controller() -> S | None:
+            if without_controller is None:
+                return cast(S, g.controller)
+            return cast(S | None, g.get("controller"))
+
         if inspect.iscoroutinefunction(func):
 
             @wraps(func)
             async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-                return await func(g.controller, *args, **kwargs)
+                bound = controller()
+                if bound is None:
+                    return cast(R, without_controller)
+                return await func(bound, *args, **kwargs)
 
             return async_wrapper
 
         @wraps(func)
         def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            return cast(R, func(g.controller, *args, **kwargs))
+            bound = controller()
+            if bound is None:
+                return cast(R, without_controller)
+            return cast(R, func(bound, *args, **kwargs))
 
         return sync_wrapper
 
-    @staticmethod
-    def __bind_controller_error_handler(
-        func: Callable[..., Any],
-    ) -> Callable[..., Awaitable[Any]]:
-        """Bind a controller's error handler, falling back to a bare 500 when there is no controller.
+    def __contain_request_errors(
+        self,
+        handle_request: Callable[[Request], Awaitable[Any]],
+    ) -> Callable[[Request], Awaitable[Any]]:
+        """
+        Answer an exception that escapes request handling with a bare 500.
 
-        The controller is created in a before_request hook, so if its factory raises, the
-        blueprint's error handlers run with no `g.controller`. Calling the handler then would
-        raise again, Quart would call it once more for the resulting 500, and the exception
-        would reach Quart's ASGI layer, which answers with a traceback page -- file paths,
-        source and frame locals -- even outside debug mode.
+        Such an exception reaches Quart's ASGI layer, which, depending on the Quart version,
+        answers with its debug traceback page -- file paths, source and frame locals -- even
+        outside debug mode. In debug and testing mode the exception still goes through, so
+        the traceback stays visible where it is wanted.
         """
 
-        @wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-            controller = g.get("controller")
-            if controller is None:
-                return "Internal Server Error", 500
-            result = func(controller, *args, **kwargs)
-            if inspect.isawaitable(result):
-                result = await result
-            return result
+        @wraps(handle_request)
+        async def wrapper(request: Request) -> Any:  # noqa: ANN401
+            try:
+                return await handle_request(request)
+            except Exception:
+                if self.__app.debug or self.__app.testing:
+                    raise
+                logger.exception("Unhandled exception on request %s %s", request.method, request.path)
+                return Response(INTERNAL_SERVER_ERROR[0], status=INTERNAL_SERVER_ERROR[1])
 
         return wrapper
 
@@ -483,7 +512,7 @@ class BaseWebApp:
             if isinstance(callback, ErrorHandlerCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 blueprint.register_error_handler(
                     callback.error_handler_exception,
-                    self.__bind_controller_error_handler(callback),
+                    self.__bind_controller(callback, without_controller=INTERNAL_SERVER_ERROR),
                 )
 
     @staticmethod

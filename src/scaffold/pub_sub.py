@@ -14,9 +14,15 @@ class PostgresPubSubService:
         self,
         connection_pool: AsyncConnectionPool,
         database_channel: str = "pub_sub_messages",
+        reconnect_delay: float = 1.0,
     ) -> None:
+        """
+        `reconnect_delay` is how long the listener waits before listening again after its
+        connection failed.
+        """
         self._connection_pool = connection_pool
         self._database_channel = database_channel
+        self._reconnect_delay = reconnect_delay
         self._subscribers: dict[str, list[asyncio.Queue[str]]] = {}
         self._listener_task: asyncio.Task[None] | None = None
 
@@ -71,6 +77,19 @@ class PostgresPubSubService:
                     self._listener_task = None
 
     async def _listen(self) -> None:
+        # The one listener serves every subscriber in the process, so it must not end while
+        # they wait: if its connection fails, it listens again on a new one. Messages
+        # published in the meantime are lost, as NOTIFY is not stored.
+        while True:
+            try:
+                await self._listen_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("The pub/sub listener failed, listening again")
+            await asyncio.sleep(self._reconnect_delay)
+
+    async def _listen_once(self) -> None:
         async with self._connection_pool.connection() as conn:
             await conn.execute(
                 sql.SQL("LISTEN {database_channel}").format(
@@ -80,29 +99,34 @@ class PostgresPubSubService:
             await conn.commit()
 
             async for notification in conn.notifies():
-                # Any session on the database can NOTIFY this channel, so a payload is not
-                # necessarily one `publish()` built. Drop anything malformed one message at a
-                # time: an exception here would end the listener for every subscriber.
-                try:
-                    data = json.loads(notification.payload)
-                except json.JSONDecodeError:
-                    logger.warning("Ignoring a pub/sub notification that is not valid JSON")
-                    continue
+                self._dispatch(notification.payload)
 
-                if not isinstance(data, dict):
-                    logger.warning("Ignoring a pub/sub notification that is not a JSON object")
-                    continue
+    def _dispatch(self, payload: str) -> None:
+        # Any session on the database can NOTIFY this channel, so a payload is not
+        # necessarily one `publish()` built. Drop anything malformed one message at a time:
+        # an exception here would end the listener for every subscriber.
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            logger.warning("Ignoring a pub/sub notification that is not valid JSON")
+            return
 
-                channel_name = data.get("channel_name")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-                message = data.get("message")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-                if not isinstance(channel_name, str) or not isinstance(message, str):
-                    logger.warning("Ignoring a pub/sub notification without string fields")
-                    continue
+        if not isinstance(data, dict):
+            logger.warning("Ignoring a pub/sub notification that is not a JSON object")
+            return
 
-                if channel_name and message:
-                    # Dispatch the message to subscribers of the logical channel
-                    for queue in list(self._subscribers.get(channel_name, [])):
-                        queue.put_nowait(message)
+        channel_name = data.get("channel_name")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        message = data.get("message")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        if not isinstance(channel_name, str) or not isinstance(message, str):
+            logger.warning("Ignoring a pub/sub notification without string fields")
+            return
+
+        # An empty channel name or message is not something `publish()` sends either
+        if not channel_name or not message:
+            return
+
+        for queue in list(self._subscribers.get(channel_name, [])):
+            queue.put_nowait(message)
 
 
 class AsyncioPubSubService:

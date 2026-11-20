@@ -466,7 +466,8 @@ async def handle_connection_isolated(
     host: str,
     port: int,
 ) -> None:
-    """Serve one connection without letting its failure end the server.
+    """
+    Serve one connection without letting its failure end the server.
 
     Every connection runs in the same task group, which cancels all of its tasks as soon as
     one of them raises. So an error from one client -- a protocol violation, or an
