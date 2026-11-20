@@ -18,6 +18,14 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[project.optional-dependencies]
+cli = [
+    "click>=8.1",
+]
+postmark = [
+    "httpx>=0.27",
+]
+
 [build-system]
 requires = ["hatchling", "hatch-vcs", "hatch-fancy-pypi-readme"]
 build-backend = "hatchling.build"
@@ -43,6 +51,8 @@ dev = [
     "black>=24.10.0",
     "pyright>=1.1.403",
     "testcontainers>=4.15.0",
+    "click>=8.1",
+    "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]

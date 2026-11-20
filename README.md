@@ -8,14 +8,16 @@ Scaffold is a full-stack web framework that makes it easy to build apps followin
 - Generic UoW and repository implementation on top of SQLAlchemy and database migrations with Alembic
 - Easy-to-use DI container with auto-wiring based on type annotations
 - Async task manager
-- Task queue built on top of Postgres
+- Task queue built on top of Postgres, with named queues, retries, dead-lettering and lease renewal for long tasks
 - Scheduled/Cron jobs
 - Pub/sub built on top of Postgres
-- Sending emails
+- Sending emails over SMTP or Postmark
 - Static code checking using Ruff, mypy, and Import Linter in pre-commit hooks and a CI/CD pipeline
-- CLI app framework
+- CLI app framework: click commands that get the app's DI container and can be coroutines
 - WTForms integration with CSRF protection
-- Asset pipeline
+- Session based sign-in with a remember-me cookie (compatible with Flask-Login's sessions)
+- Translations with gettext
+- Asset pipeline with content-hashed names, long-lived caching and ordered manifests
 - Dev web server with support for debugging from your favorite IDE
 - Local development with Docker Compose (for dev/prod parity)
 - Zero-downtime deployment with Docker Swarm, Traefik (with Let's Encrypt certificates), and GitHub Actions
@@ -786,3 +788,7 @@ docker compose up
 ```
 
 Now the web app should be accessible at `app.localhost`.
+
+## Releases
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release and how to upgrade.

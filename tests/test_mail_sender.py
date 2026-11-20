@@ -7,8 +7,8 @@ from typing import cast
 import aiosmtplib
 import pytest
 
-from scaffold.email_notification_service import Attachment, Message
-from scaffold.mail_sender import SmtpMailSender, build_mime_message
+from scaffold.email_notification_service import Attachment, MailDeliveryError, Message
+from scaffold.mail_sender import InMemoryMailSender, SmtpMailSender, build_mime_message
 
 
 @dataclasses.dataclass
@@ -16,6 +16,7 @@ class SentEmail:
     message: MimeMessage
     sender: str
     recipients: list[str]
+    options: dict[str, object] = dataclasses.field(default_factory=dict[str, object])
 
 
 class FakeSmtp:
@@ -33,7 +34,7 @@ class FakeSmtp:
         **kwargs: object,
     ) -> tuple[dict[str, object], str]:
         self.sent.append(
-            SentEmail(message=message, sender=sender, recipients=recipients),
+            SentEmail(message=message, sender=sender, recipients=recipients, options=kwargs),
         )
         return ({}, "OK")
 
@@ -368,3 +369,64 @@ def test_an_unusable_content_type_falls_back_to_octet_stream() -> None:
     message = build_mime_message(make_message(attachments=[attachment]), MESSAGE_ID)
 
     assert attachment_parts(message)[0].get_content_type() == "application/octet-stream"
+
+
+@pytest.mark.asyncio
+async def test_connection_is_upgraded_when_the_server_offers_it_by_default(
+    smtp: FakeSmtp,
+    mail_sender: SmtpMailSender,
+) -> None:
+    await mail_sender.send(make_message())
+
+    assert smtp.sent[0].options["use_tls"] is False
+    assert smtp.sent[0].options["start_tls"] is None
+
+
+@pytest.mark.asyncio
+async def test_connection_security_can_be_chosen(smtp: FakeSmtp) -> None:
+    await SmtpMailSender(host="smtp.example.com", port=465, use_tls=True).send(make_message())
+    await SmtpMailSender(host="localhost", port=1025, start_tls=False).send(make_message())
+
+    assert smtp.sent[0].options["use_tls"] is True
+    assert smtp.sent[1].options["start_tls"] is False
+
+
+@pytest.mark.asyncio
+async def test_sender_logs_in_only_with_both_a_user_name_and_a_password(smtp: FakeSmtp) -> None:
+    await SmtpMailSender(host="smtp.example.com", port=587, username="user", password="secret").send(make_message())  # noqa: S106
+    await SmtpMailSender(host="smtp.example.com", port=587, username="user").send(make_message())
+
+    assert (smtp.sent[0].options["username"], smtp.sent[0].options["password"]) == ("user", "secret")
+    assert (smtp.sent[1].options["username"], smtp.sent[1].options["password"]) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_in_memory_sender_keeps_the_messages() -> None:
+    sender = InMemoryMailSender()
+    message = make_message()
+
+    message_id = await sender.send(message)
+
+    assert sender.messages == [message]
+    assert message_id.startswith("<")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [aiosmtplib.SMTPRecipientsRefused([]), aiosmtplib.SMTPConnectError("refused"), ConnectionRefusedError("refused")],
+)
+async def test_smtp_failure_is_a_delivery_error(
+    monkeypatch: pytest.MonkeyPatch,
+    mail_sender: SmtpMailSender,
+    error: Exception,
+) -> None:
+    async def fail(*args: object, **kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(aiosmtplib, "send", fail)
+
+    with pytest.raises(MailDeliveryError) as excinfo:
+        await mail_sender.send(make_message())
+
+    assert excinfo.value.__cause__ is error

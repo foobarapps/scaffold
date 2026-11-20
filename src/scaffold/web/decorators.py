@@ -29,7 +29,17 @@ def route[**P, R](
     rule: str,
     **options: Any,  # noqa: ANN401
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """
+    Serve the method at `rule`.
+
+    The decorator can be stacked to serve one method at several rules. They are
+    registered bottom-up, like stacked route decorators of a Quart blueprint.
+    """
+
     def decorator(f: Callable[P, R]) -> Callable[P, R]:
+        routes: list[tuple[str, dict[str, Any]]] = list(getattr(f, "routes", []))
+        routes.append((rule, options))
+        setattr(f, "routes", routes)
         setattr(f, "route", (rule, options))
         return f
 

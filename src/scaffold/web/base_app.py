@@ -8,19 +8,22 @@ from typing import Any, Concatenate, Protocol, cast, runtime_checkable
 
 from flask.sansio.blueprints import Blueprint as SansioBlueprint  # type: ignore
 from flask.templating import Environment
+from hypercorn.typing import ASGIFramework
 from quart import (
     Blueprint,
     Quart,
     Request,
     ResponseReturnValue,
     Websocket,
+    abort,
     g,
     request,
     send_from_directory,  # type: ignore
     websocket,
 )
-from quart.ctx import AppContext
+from quart.ctx import AppContext, RequestContext
 from quart.typing import (
+    AfterRequestCallable,
     AfterServingCallable,
     BeforeRequestCallable,
     BeforeServingCallable,
@@ -31,6 +34,8 @@ from quart.typing import (
 
 from .assets import Assets
 from .base_controller import BaseController
+
+ONE_YEAR_IN_SECONDS = 31_536_000
 
 
 @runtime_checkable
@@ -95,8 +100,25 @@ class BaseWebApp:
         secret_key: bytes | None = None,
         server_name: str | None = None,
         propagate_exceptions: bool = False,
+        serve_assets: bool = True,
+        refresh_assets: bool = False,
+        static_folder: str | Path | None = None,
     ) -> None:
+        """
+        `server_name` makes routes match that host only and is the host of URLs built
+        outside of a request. Without it requests are accepted on any host.
+
+        `serve_assets` can be turned off by an app that brings its own asset pipeline;
+        the /assets route and the `assets` template variable are then left to the app.
+
+        `refresh_assets` picks up changed files in the static folder without a restart.
+        It is meant for development.
+
+        `static_folder` defaults to the `static` folder of the root package.
+        """
         self.__app = Quart(root_package_name)
+        if static_folder is not None:
+            self.__app.static_folder = str(static_folder)
 
         # TODO expose all config vars (https://flask.palletsprojects.com/en/stable/config/) through the constructor
         self.__app.config.update(  # type: ignore
@@ -117,6 +139,7 @@ class BaseWebApp:
 
         # Assets will be initialized in setup
         self.__assets: Assets | None = None
+        self.__refresh_assets = refresh_assets
 
         # First, so a health check never builds a controller or reaches routing.
         self.__app.before_request(self.__answer_health_check)
@@ -124,7 +147,8 @@ class BaseWebApp:
         self.__app.before_websocket(self.__create_websocket_controller_instance)
 
         self.__register_app_callbacks()
-        self.__setup_assets_serving()
+        if serve_assets:
+            self.__setup_assets_serving()
 
         self.init()
 
@@ -161,6 +185,11 @@ class BaseWebApp:
     def static_folder(self) -> str | None:
         return self.__app.static_folder
 
+    @property
+    def assets(self) -> Assets:
+        """The app's assets, for code that needs an asset's name or URL outside of a template."""
+        return self.__get_assets()
+
     def app_context(self) -> AppContext:
         return self.__app.app_context()
 
@@ -188,6 +217,75 @@ class BaseWebApp:
 
     def before_request(self, before_request_callable: BeforeRequestCallable) -> None:
         self.__app.before_request(before_request_callable)
+
+    def after_request(self, after_request_callable: AfterRequestCallable) -> None:
+        """Run a function on the response of every request, whichever controller served it."""
+        self.__app.after_request(after_request_callable)
+
+    def register_error_handler(
+        self,
+        exception: type[Exception] | int,
+        error_handler_callable: Callable[..., ResponseReturnValue | Awaitable[ResponseReturnValue]],
+    ) -> None:
+        """Handle an exception type or HTTP status code for every controller."""
+        self.__app.register_error_handler(exception, error_handler_callable)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+
+    def add_url_rule(
+        self,
+        rule: str,
+        view_func: Callable[..., ResponseReturnValue | Awaitable[ResponseReturnValue]],
+        *,
+        endpoint: str | None = None,
+        **options: Any,  # noqa: ANN401
+    ) -> None:
+        """
+        Serve a plain function at `rule`, outside of any controller.
+
+        Controllers are the way to add routes to an app. This is for the odd route that
+        has no controller to live in, such as one a test adds to observe a request.
+        """
+        self.__app.add_url_rule(rule, endpoint=endpoint, view_func=view_func, **options)  # pyright: ignore[reportArgumentType]
+
+    def wrap_asgi_app(self, middleware: Callable[[ASGIFramework], ASGIFramework]) -> None:
+        """
+        Wrap the ASGI application in a middleware.
+
+        Unlike wrapping the whole app from the outside, the test client goes through
+        the middleware as well.
+        """
+        self.__app.asgi_app = middleware(self.__app.asgi_app)  # type: ignore[assignment, arg-type]
+
+    def build_url(
+        self,
+        endpoint: str,
+        *,
+        server_name: str | None = None,
+        scheme: str | None = None,
+        **values: Any,  # noqa: ANN401
+    ) -> str:
+        """
+        Build an absolute URL outside of a request, e.g. for a link in an email.
+
+        The host is `server_name`, or the one the app was created with. Values that are
+        not part of the route become query parameters.
+        """
+        host = cast(str | None, server_name or self.__app.config["SERVER_NAME"])  # pyright: ignore[reportUnknownMemberType]
+        if host is None:
+            error_message = "A server name is needed to build an absolute URL"
+            raise RuntimeError(error_message)
+
+        if scheme is None:
+            scheme = "https" if self.__app.config["PREFER_SECURE_URLS"] else "http"  # pyright: ignore[reportUnknownMemberType]
+
+        url_adapter = self.__app.url_map.bind(host, url_scheme=scheme)
+        return url_adapter.build(endpoint, values, force_external=True)
+
+    def test_request_context(
+        self,
+        *args: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401
+    ) -> RequestContext:
+        return self.__app.test_request_context(*args, **kwargs)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     def register_controllers(
         self,
@@ -307,18 +405,18 @@ class BaseWebApp:
             controller_class,
             predicate=lambda member: inspect.isfunction(member) and isinstance(member, RouteFunction),  # pyright: ignore[reportUnnecessaryIsInstance]
         ):
-            rule, options = view_function.route
-
             wrapped_view_function = self.__bind_controller(
                 view_function,
             )
 
-            blueprint.add_url_rule(
-                rule=rule,
-                endpoint=view_function_name,
-                view_func=wrapped_view_function,
-                **options,
-            )
+            routes: list[tuple[str, dict[str, Any]]] = getattr(view_function, "routes", [view_function.route])
+            for rule, options in routes:
+                blueprint.add_url_rule(
+                    rule=rule,
+                    endpoint=view_function_name,
+                    view_func=wrapped_view_function,
+                    **options,
+                )
 
     def __register_app_callbacks(self) -> None:
         for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
@@ -412,33 +510,50 @@ class BaseWebApp:
         )
         self.__app.register_blueprint(blueprint)
 
-    async def __setup_assets(self) -> None:
-        """Initialize assets when the app starts serving."""
-        if self.__app.static_folder is None:
-            error_message = "A static folder has to be set"
-            raise RuntimeError(error_message)
+    def __get_assets(self) -> Assets:
+        if self.__assets is None:
+            if self.__app.static_folder is None:
+                error_message = "A static folder has to be set"
+                raise RuntimeError(error_message)
+            self.__assets = Assets(Path(self.__app.static_folder), auto_refresh=self.__refresh_assets)
+        return self.__assets
 
-        # Initialize assets container
-        static_dir = Path(self.__app.static_folder)
-        self.__assets = Assets(static_dir)
-        await self.__assets.update_file_maps()
+    async def __setup_assets(self) -> None:
+        """Read the static folder when the app starts serving, off the event loop."""
+        await self.__get_assets().update_file_maps()
 
     async def __serve_assets(self, path: str) -> ResponseReturnValue:
         """Serve assets with hashed filenames."""
-        if self.__app.static_folder is None:
-            error_message = "A static folder has to be set"
-            raise RuntimeError(error_message)
+        assets = self.__get_assets()
+        static_folder = assets.static_dir
 
-        if self.__assets is None:
-            error_message = "Assets not initialized"
-            raise RuntimeError(error_message)
+        original_filename = assets.get_original_filename(path)
 
-        original_filename = self.__assets.get_original_filename(path)
-        return await send_from_directory(self.__app.static_folder, original_filename)
+        try:
+            is_file = (static_folder / original_filename).is_file()
+        except OSError:
+            # A name the file system cannot even look up, e.g. one that is too long
+            is_file = False
+        if not is_file:
+            abort(404)
+
+        # A hashed name never serves different content, so it can be cached for good.
+        # A plain name has to be revalidated, because the file behind it can change.
+        is_hashed = assets.is_hashed_filename(path)
+        response = await send_from_directory(
+            static_folder,
+            original_filename,
+            conditional=True,
+            cache_timeout=ONE_YEAR_IN_SECONDS if is_hashed else 0,
+        )
+        response.headers["Cache-Control"] = (
+            f"public, max-age={ONE_YEAR_IN_SECONDS}, immutable" if is_hashed else "public, max-age=0, must-revalidate"
+        )
+        return response
 
     def __template_context(self) -> dict[str, Any]:
         """Inject assets into template context."""
-        return {"assets": self.__assets}
+        return {"assets": self.__get_assets()}
 
     async def __call__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
         return await self.__app(*args, **kwargs)
