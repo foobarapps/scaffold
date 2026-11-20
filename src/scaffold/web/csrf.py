@@ -14,6 +14,7 @@ CSRF_FIELD_NAME = "csrf_token"
 CSRF_SESSION_KEY = "csrf"
 SAFE_CSRF_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 CSRF_TIME_FORMAT = "%Y%m%d%H%M%S"
+CSRF_EXEMPT_ATTRIBUTE = "_scaffold_csrf_exempt"
 
 type ViewFunction = Callable[..., object]
 
@@ -23,9 +24,6 @@ class CSRFError(ValueError):
 
 
 class CSRFProtect:
-    def __init__(self) -> None:
-        self._exempt_views: set[str] = set()
-
     def init_app(self, app: BaseWebApp) -> None:
         app.jinja_env.globals["csrf_token"] = generate_csrf_token  # type: ignore[reportUnknownVariableType]
         app.jinja_env.globals["csrf_input"] = generate_csrf_input  # type: ignore[reportUnknownVariableType]
@@ -53,7 +51,11 @@ class CSRFProtect:
             abort(400)
 
     def exempt[F: ViewFunction](self, view: F) -> F:
-        self._exempt_views.add(_get_view_location(view))
+        # Mark the function object itself rather than recording its name. Controller methods
+        # are bare names like `update`, so a name would also exempt every same-named method
+        # on other controllers in the module. functools.wraps copies the function's __dict__,
+        # so the mark survives the controller binding; a wrapper that drops it fails closed.
+        setattr(view, CSRF_EXEMPT_ATTRIBUTE, True)
         return view
 
     def _is_exempt(self) -> bool:
@@ -64,7 +66,7 @@ class CSRFProtect:
         if view is None:
             return False
 
-        return _get_view_location(view) in self._exempt_views
+        return getattr(view, CSRF_EXEMPT_ATTRIBUTE, False) is True
 
 
 _csrf = CSRFProtect()
@@ -153,7 +155,3 @@ def _get_csrf_time_limit() -> timedelta | None:
 
     msg = "CSRF_TIME_LIMIT must be an int, string, timedelta, or None"
     raise TypeError(msg)
-
-
-def _get_view_location(view: ViewFunction) -> str:
-    return f"{view.__module__}.{view.__name__}"

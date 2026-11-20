@@ -12,6 +12,7 @@ import os
 import signal
 import socket
 import sys
+import traceback
 import urllib.parse
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
@@ -109,7 +110,13 @@ async def handle_http(
             if response_complete.is_set():
                 return {"type": "http.disconnect"}
 
-            event = conn.next_event()
+            try:
+                event = conn.next_event()
+            except h11.RemoteProtocolError:
+                # A malformed body (an illegal chunk header, say) ends this request only.
+                client_disconnected = True
+                keep_connection_open = False
+                return {"type": "http.disconnect"}
 
             if isinstance(event, h11.Data):
                 return {
@@ -193,7 +200,18 @@ async def handle_websockets(
     port: int,
 ) -> None:
     ws_conn = WSConnection(ConnectionType.SERVER)
-    ws_conn.initiate_upgrade_connection(list(http_request.headers), http_request.target)
+    try:
+        ws_conn.initiate_upgrade_connection(list(http_request.headers), http_request.target)
+    except ProtocolError:
+        # An upgrade request missing Sec-WebSocket-Key/Version, for example. Refuse it here
+        # rather than letting the error reach the server's task group.
+        write(
+            writer,
+            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        with suppress(BrokenPipeError, ConnectionResetError):
+            await writer.drain()
+        return
 
     parsed_target = urllib.parse.urlparse(http_request.target.decode())
 
@@ -440,6 +458,27 @@ async def handle_connection(
         # client_socket.close()
 
 
+async def handle_connection_isolated(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    app: ASGIApp,
+    state: LifespanState,
+    host: str,
+    port: int,
+) -> None:
+    """Serve one connection without letting its failure end the server.
+
+    Every connection runs in the same task group, which cancels all of its tasks as soon as
+    one of them raises. So an error from one client -- a protocol violation, or an
+    exception escaping the app -- has to stop here, or it would drop every other client and
+    shut the server down.
+    """
+    try:
+        await handle_connection(reader, writer, app, state, host, port)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+
+
 @asynccontextmanager
 async def lifespan(
     app: ASGIApp,
@@ -600,7 +639,7 @@ async def serve(app: ASGIApp, host: str, port: int) -> None:
 
                 server = await asyncio.start_server(
                     lambda reader, writer: tg.create_task(
-                        handle_connection(
+                        handle_connection_isolated(
                             reader,
                             writer,
                             app,

@@ -396,6 +396,31 @@ class BaseWebApp:
 
         return sync_wrapper
 
+    @staticmethod
+    def __bind_controller_error_handler(
+        func: Callable[..., Any],
+    ) -> Callable[..., Awaitable[Any]]:
+        """Bind a controller's error handler, falling back to a bare 500 when there is no controller.
+
+        The controller is created in a before_request hook, so if its factory raises, the
+        blueprint's error handlers run with no `g.controller`. Calling the handler then would
+        raise again, Quart would call it once more for the resulting 500, and the exception
+        would reach Quart's ASGI layer, which answers with a traceback page -- file paths,
+        source and frame locals -- even outside debug mode.
+        """
+
+        @wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            controller = g.get("controller")
+            if controller is None:
+                return "Internal Server Error", 500
+            result = func(controller, *args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+        return wrapper
+
     def __register_view_functions(
         self,
         blueprint: Blueprint,
@@ -458,7 +483,7 @@ class BaseWebApp:
             if isinstance(callback, ErrorHandlerCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 blueprint.register_error_handler(
                     callback.error_handler_exception,
-                    self.__bind_controller(callback),
+                    self.__bind_controller_error_handler(callback),
                 )
 
     @staticmethod
