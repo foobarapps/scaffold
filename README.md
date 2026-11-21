@@ -775,8 +775,8 @@ secret = app_config()["STRIPE_WEBHOOK_SECRET"]  # object, to be narrowed
 response = await make_response("cached")  # Quart's Response, so make_conditional can be awaited
 ```
 
-Jinja filters and globals are registered on the app with `app.add_template_filter(name, function)`
-and `app.add_template_global(name, value)`. In tests, `app.test_client()` returns Quart's
+Jinja filters and globals are registered on the app with `app.add_template_filter(function, name)`
+and `app.add_template_global(value, name)`; the name defaults to the one of the function. In tests, `app.test_client()` returns Quart's
 `QuartClient` and `scaffold.web.testing.session_transaction(client)` opens its session.
 
 ### Bootstrap

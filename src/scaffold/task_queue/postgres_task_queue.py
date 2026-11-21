@@ -634,15 +634,6 @@ class PostgresTaskQueue[T]:
         self._handler_factories[task_type] = handler_factory
 
     @property
-    def task_types(self) -> frozenset[type[T]]:
-        """The types of tasks that a handler is registered for."""
-        return frozenset(self._handler_factories)
-
-    def create_handler(self, task_type: type[T]) -> HandlerProtocol[T]:
-        """Create the handler registered for a type of task, the way the queue does to run one."""
-        return self._handler_factories[task_type]()
-
-    @property
     def _full_table_identifier(self) -> sql.Identifier:
         return sql.Identifier(self._schema_name, self._table_name)
 

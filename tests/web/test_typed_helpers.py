@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from quart import Response, render_template_string, request
 from quart.datastructures import FileStorage
+from werkzeug.wrappers import Response as WerkzeugResponse
 
 from scaffold.web import (
     BaseController,
@@ -71,6 +72,10 @@ class HelpersController(BaseController):
         response.set_etag("version-1")
         await response.make_conditional(request)
         return response
+
+    @route("/bytes-path")
+    async def bytes_path(self) -> Response:
+        return await send_file(str(Path(__file__)).encode())
 
     @route("/config")
     async def config(self) -> str:
@@ -157,13 +162,52 @@ async def test_app_config_reads_the_config_of_the_current_app() -> None:
 
 async def test_template_filters_and_globals() -> None:
     app = create_app()
-    app.add_template_filter("upper_case", str.upper)
-    app.add_template_global("site_name", "Scaffold")
-    app.add_template_global("double", double)
+    app.add_template_filter(str.upper, "upper_case")
+    app.add_template_global("Scaffold", "site_name")
+    app.add_template_global(double)
 
     response = await app.test_client().get("/template")
 
     assert await response.get_data(as_text=True) == "Scaffold SHOUT 4"
+
+
+async def test_template_filter_goes_under_its_own_name_by_default() -> None:
+    app = create_app()
+    app.add_template_filter(double)
+
+    async with app.app_context():
+        rendered = await render_template_string("{{ 2 | double }}")
+
+    assert rendered == "4"
+
+
+async def test_template_global_that_is_not_a_function_needs_a_name() -> None:
+    with pytest.raises(ValueError, match="needs a name"):
+        create_app().add_template_global("Scaffold")
+
+
+async def test_make_response_refuses_a_werkzeug_response() -> None:
+    async with create_app().app_context():
+        with pytest.raises(TypeError, match="Expected a Quart response"):
+            await make_response(WerkzeugResponse("plain"))
+
+
+async def test_send_file_takes_a_path_as_bytes() -> None:
+    client = create_app().test_client()
+
+    response = await client.get("/bytes-path")
+
+    assert "test_send_file_takes_a_path_as_bytes" in await response.get_data(as_text=True)
+
+
+async def test_session_transaction_opens_the_session_for_a_path_and_headers() -> None:
+    client = create_app().test_client()
+
+    async with session_transaction(client, "/session", headers={"X-Test": "1"}) as session:
+        session["visits"] = 5
+    response = await client.get("/session")
+
+    assert await response.get_data(as_text=True) == "5"
 
 
 async def test_session_transaction_changes_the_session_of_a_test_client() -> None:

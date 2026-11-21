@@ -11,23 +11,29 @@ does not need ignore comments, casts or helpers of its own around them.
 ### Upgrading from 0.10.x
 
 **Test client.** `BaseWebApp.test_client()` returns Quart's `QuartClient` instead of the
-`TestClientProtocol`, and takes only `use_cookies`, by keyword. Change annotations of
-`TestClientProtocol` to `quart.testing.QuartClient`.
+`TestClientProtocol`, and its only parameter is `use_cookies`, by keyword.
+
+- Change annotations of `TestClientProtocol` to `quart.testing.QuartClient`.
+- Change `app.test_client(False)` to `app.test_client(use_cookies=False)`.
+- Drop any other arguments. Quart passed them on to the test client class, and Quart's
+  own client takes none, so they only worked with a custom class, which an app on
+  Scaffold cannot set.
 
 ### Added
 
 - `scaffold.web`: `request_form()`, `request_files()`, `request_values()` and
   `request_form_and_files()` return the data of the current request with the types of its
   keys and values, which Quart leaves out.
-- `scaffold.web`: `send_file()` and `send_from_directory()` with full signatures, and
-  `make_response()` that returns Quart's own response, so that `make_conditional` can be
-  awaited without a check.
+- `scaffold.web`: `send_file()` and `send_from_directory()` with Quart's full signatures.
+- `scaffold.web`: `make_response()` returns Quart's own response, so that `make_conditional`
+  can be awaited without a check. Unlike Quart's, it raises a `TypeError` when it is given
+  a Werkzeug response, which Quart hands back as it is. Keep `quart.make_response` for those.
 - `scaffold.web`: `app_config()` reads the config of the current app as a typed mapping.
 - `BaseWebApp.add_template_filter()` and `BaseWebApp.add_template_global()` register Jinja
-  filters and globals. A global can be any value, not only a function.
-- `scaffold.web.testing.session_transaction()` opens the session of a test client.
-- `PostgresTaskQueue.task_types` and `PostgresTaskQueue.create_handler()` tell which types
-  of tasks have a handler and create one, e.g. for a test of how an app wires its queue.
+  filters and globals, with the arguments of Quart's own. A global can be any value, not
+  only a function; one that is not a function needs a name.
+- `scaffold.web.testing.session_transaction()` opens the session of a test client, for a
+  path and headers if given.
 
 ## 0.10.0
 
