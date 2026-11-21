@@ -2,8 +2,8 @@ import asyncio
 import contextlib
 import dataclasses
 import datetime
-import importlib
 import logging
+import sys
 import traceback
 import uuid
 from collections.abc import AsyncGenerator, Callable, Mapping
@@ -53,8 +53,8 @@ class PostgresTaskQueue[T]:
     since trying again cannot help.
 
     Tasks go to named queues, `default` unless said otherwise. `consume()` works one queue
-    with a fixed number of consumers and stops gracefully; `handle_tasks()` runs every task
-    it can get as soon as it gets it.
+    with a fixed number of consumers and stops gracefully; `handle_tasks()` runs tasks from
+    any queue as soon as it gets them, a bounded number at a time.
     """
 
     @override
@@ -101,6 +101,8 @@ class PostgresTaskQueue[T]:
         and under `consume()` its lease is renewed all the while.
         """
         self._handler_factories: dict[type[T], Callable[[], HandlerProtocol[T]]] = {}
+        # The registered task types by the (module, class) names a row stores
+        self._task_types: dict[tuple[str, str], type[T]] = {}
         self._connection_pool = connection_pool
         self._schema_name = schema_name
         self._table_name = table_name
@@ -387,19 +389,46 @@ class PostgresTaskQueue[T]:
             (row["id"],),
         )
 
-    async def handle_tasks(self, queue: str | None = None) -> None:
+    async def handle_tasks(self, queue: str | None = None, *, concurrency: int | None = 10) -> None:
         """
-        Run every task as soon as it can be had, from one queue or, by default, from all of them.
+        Run tasks as soon as they can be had, from one queue or, by default, from all of them.
 
-        This is the queue as it worked before `consume()`: no limit on how many tasks run
-        at once, and no lease renewal, so a task that runs longer than its visibility timeout
-        is handed out again. Tasks go through `handle_task()`, which a subclass may override.
+        This is the queue as it worked before `consume()`: no lease renewal, so a task that
+        runs longer than its visibility timeout is handed out again. Tasks go through
+        `handle_task()`, which a subclass may override. Only registered task types are
+        decoded, so a subclass still has to `register()` every type it handles; a task of any
+        other type is dead-lettered.
+
+        At most `concurrency` tasks run at a time, and a task is only leased once one of them
+        has finished. Without a limit, a burst of due tasks is leased all at once and every
+        handler competes for the same connection pool, so tasks fail on pool timeouts that
+        are charged to their attempts. None removes the limit.
         """
+        if concurrency is not None and concurrency < 1:
+            message = "concurrency must be at least 1, or None for no limit"
+            raise ValueError(message)
+        slots = asyncio.Semaphore(concurrency if concurrency is not None else sys.maxsize)
+
+        async def handle_in_slot(delivery: _Delivery[T]) -> None:
+            try:
+                await self.handle_task(delivery.info.id, delivery.task)
+            finally:
+                slots.release()
+
         async with asyncio.TaskGroup() as tg:
-            async for delivery in self._deliveries(queue):
+            deliveries = aiter(self._deliveries(queue))
+            while True:
+                # Take a slot before leasing the next task, so the worker never holds more
+                # tasks than it is running.
+                await slots.acquire()
+                try:
+                    delivery = await anext(deliveries)
+                except BaseException:
+                    slots.release()
+                    raise
                 # Kept for `handle_task()` to pick up, which only gets the id and the task
                 self._handed_out[delivery.info.id] = delivery.info
-                tg.create_task(self.handle_task(delivery.info.id, delivery.task))
+                tg.create_task(handle_in_slot(delivery))
 
     async def consume(
         self,
@@ -583,9 +612,7 @@ class PostgresTaskQueue[T]:
                     continue
 
                 try:
-                    # TODO cache this
-                    task_module = importlib.import_module(row["module_name"])
-                    task_class = getattr(task_module, row["class_name"])
+                    task_class = self._registered_task_class(row["module_name"], row["class_name"])
                     task = pydantic.TypeAdapter(task_class).validate_python(row["data"])
                 except Exception:
                     logger.exception("Task %s cannot be deserialized, dead-lettering it", row["id"])
@@ -626,12 +653,27 @@ class PostgresTaskQueue[T]:
             await conn.commit()
             return cursor.rowcount == 1
 
+    def _registered_task_class(self, module_name: str, class_name: str) -> type[T]:
+        """
+        The registered task type a row names.
+
+        Only registered types may be materialised. Resolving the row's names with importlib
+        would let whoever can write to the table import any module the worker can reach and,
+        through pydantic's validation of a function's arguments, call any function in it.
+        """
+        try:
+            return self._task_types[module_name, class_name]
+        except KeyError:
+            message = f"No handler is registered for task type {module_name}.{class_name}"
+            raise LookupError(message) from None
+
     def register(
         self,
         task_type: type[T],
         handler_factory: Callable[[], HandlerProtocol[T]],
     ) -> None:
         self._handler_factories[task_type] = handler_factory
+        self._task_types[task_type.__module__, task_type.__name__] = task_type
 
     @property
     def _full_table_identifier(self) -> sql.Identifier:
