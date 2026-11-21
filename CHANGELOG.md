@@ -3,12 +3,12 @@
 What changed in each release, and what to do when upgrading. The section of a version
 becomes the notes of its GitHub release when the tag is pushed.
 
-## Unreleased
+## 0.12.0
 
 Security fixes from an audit of 0.9.19, carried onto 0.11.0. Some change behaviour, see
 "Upgrading".
 
-### Upgrading from 0.11.0
+### Upgrading from 0.11.x
 
 **Email links.** `EmailNotificationService` builds the links in emails with
 `BaseWebApp.build_url`, from the app's `server_name`, and raises without one. Before, a link
