@@ -20,7 +20,13 @@ from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
 from pydantic_core import PydanticSerializationError
 
-from scaffold.task_queue import GenericFakeTaskQueue, PostgresTaskQueue, TaskInfo, migrations
+from scaffold.task_queue import (
+    GenericFakeTaskQueue,
+    PostgresTaskQueue,
+    TaskHandlerNotRegisteredError,
+    TaskInfo,
+    migrations,
+)
 
 # The queue round-trips a task through Postgres by module and class name, so this has to be
 # a module-level type that `importlib.import_module` can find again.
@@ -1177,3 +1183,34 @@ async def test_handle_task_called_directly_still_works_without_a_delivery(queue_
     assert handled == ["direct"]
     assert started[0].delivery is None
     assert await queue._get_task() is None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+class OtherTask(ExampleTask):
+    pass
+
+
+class InspectedHandler:
+    async def handle_task(self, task: ExampleTask) -> None:
+        pass
+
+
+def make_unopened_queue() -> PostgresTaskQueue[ExampleTask]:
+    # The pool is never opened: registering handlers needs no database
+    return PostgresTaskQueue[ExampleTask](make_pool("postgresql://localhost/unused"))
+
+
+def test_registered_task_types_and_handlers_can_be_inspected() -> None:
+    queue = make_unopened_queue()
+    queue.register(ExampleTask, InspectedHandler)
+
+    assert queue.task_types == {ExampleTask}
+    assert isinstance(queue.create_handler(ExampleTask), InspectedHandler)
+
+
+def test_creating_a_handler_for_an_unregistered_task_type_names_the_type() -> None:
+    queue = make_unopened_queue()
+
+    with pytest.raises(TaskHandlerNotRegisteredError, match="OtherTask") as error:
+        queue.create_handler(OtherTask)
+
+    assert error.value.task_type is OtherTask

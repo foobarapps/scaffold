@@ -3,6 +3,14 @@
 What changed in each release, and what to do when upgrading. The section of a version
 becomes the notes of its GitHub release when the tag is pushed.
 
+## 0.13.0
+
+### Added
+
+- `PostgresTaskQueue.task_types` and `PostgresTaskQueue.create_handler()` tell which types
+  of tasks have a handler and create one, e.g. for a test of how an app wires its queue.
+  `create_handler()` raises `TaskHandlerNotRegisteredError` for a type that has none.
+
 ## 0.12.0
 
 Security fixes from an audit of 0.9.19, carried onto 0.11.0. Some change behaviour, see

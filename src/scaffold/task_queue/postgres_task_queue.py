@@ -34,6 +34,14 @@ class _Delivery[T]:
     task: T
 
 
+class TaskHandlerNotRegisteredError(LookupError):
+    """No handler is registered for a type of task."""
+
+    def __init__(self, task_type: type[object]) -> None:
+        super().__init__(f"No handler is registered for {task_type.__module__}.{task_type.__qualname__}")
+        self.task_type = task_type
+
+
 class TaskRunTimeExceededError(TimeoutError):
     """A handler ran for longer than the queue's `max_run_time` and was cancelled."""
 
@@ -674,6 +682,22 @@ class PostgresTaskQueue[T]:
     ) -> None:
         self._handler_factories[task_type] = handler_factory
         self._task_types[task_type.__module__, task_type.__name__] = task_type
+
+    @property
+    def task_types(self) -> frozenset[type[T]]:
+        """The types of tasks that a handler is registered for."""
+        return frozenset(self._handler_factories)
+
+    def create_handler(self, task_type: type[T]) -> HandlerProtocol[T]:
+        """
+        Create the handler registered for a type of task, the way the queue does to run one.
+
+        Raises `TaskHandlerNotRegisteredError` for a type that has none.
+        """
+        handler_factory = self._handler_factories.get(task_type)
+        if handler_factory is None:
+            raise TaskHandlerNotRegisteredError(task_type)
+        return handler_factory()
 
     @property
     def _full_table_identifier(self) -> sql.Identifier:
