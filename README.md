@@ -761,6 +761,24 @@ class MessagesController(BaseController):
 </form>
 ```
 
+#### Typed request data and responses
+
+Quart leaves a few things untyped that a strict type checker then refuses: the form, the
+files and the values of a request, parts of `send_file`, and the config of the app.
+`scaffold.web` has typed versions of them:
+
+```python
+from scaffold.web import app_config, make_response, request_form, send_file
+
+form = await request_form()  # MultiDict[str, str]
+secret = app_config()["STRIPE_WEBHOOK_SECRET"]  # object, to be narrowed
+response = await make_response("cached")  # Quart's Response, so make_conditional can be awaited
+```
+
+Jinja filters and globals are registered on the app with `app.add_template_filter(function, name)`
+and `app.add_template_global(value, name)`; the name defaults to the one of the function. In tests, `app.test_client()` returns Quart's
+`QuartClient` and `scaffold.web.testing.session_transaction(client)` opens its session.
+
 ### Bootstrap
 
 `app/bootstrap.py`:
@@ -769,15 +787,16 @@ class MessagesController(BaseController):
 from openai import AsyncOpenAI
 from app.infrastructure.services.chatbot import OpenAIBot
 
+
 def bootstrap() -> Container:
     container = Container()
-    
+
     # ...
-    
+
     container.add_transient(Chatbot, lambda _: OpenAIBot(client=AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])))
-    
+
     # ...
-    
+
     return container
 ```
 
