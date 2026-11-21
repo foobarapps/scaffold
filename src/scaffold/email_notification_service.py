@@ -2,12 +2,11 @@ import abc
 import dataclasses
 import inspect
 import pathlib
-from collections.abc import Mapping, Sequence
-from functools import partial
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, cast
+from urllib.parse import quote
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from quart import url_for
 
 from scaffold.web.base_app import BaseWebApp
 
@@ -78,15 +77,13 @@ class EmailNotificationService:
 
     def get_jinja_env(self) -> Environment:
         templates_dir = self.get_templates_dir()
-        env = Environment(
+        return Environment(
             # TODO Write a custom preloading loader which preloads the templates to memory during startup
             # because Jinja does not support async template loading and blocks the async loop.
             # And use the loader in the web app as well.
             loader=FileSystemLoader(templates_dir),
             autoescape=select_autoescape(),
         )
-        env.globals["url_for"] = partial(url_for, _external=True)  # type: ignore
-        return env
 
     async def render_template(
         self,
@@ -96,4 +93,37 @@ class EmailNotificationService:
         env = self.get_jinja_env()
         template = env.get_template(template_path)
         async with self.web_app.app_context():
+            # Links in an email must point at the app's configured host. Quart's url_for
+            # prefers the current request's adapter, which is bound to the client-supplied
+            # Host header -- and background tasks inherit that request context -- so a client
+            # could otherwise have a password-reset link sent out pointing at its own host.
+            # build_url only ever uses the configured server name, and raises without one.
+            env.globals["url_for"] = _external_url_for(self.web_app)  # pyright: ignore[reportArgumentType]
             return template.render(**context)
+
+
+def _external_url_for(web_app: BaseWebApp) -> Callable[..., str]:
+    """
+    A url_for for email templates, taking Quart's arguments but always building with build_url.
+
+    The host is never one a template or a request supplies: it is the app's server name.
+    """
+
+    def url_for(endpoint: str, **values: Any) -> str:  # noqa: ANN401
+        # Links in an email are external whatever the template asks; the method only picks
+        # between rules and does not change the URL that is built.
+        values.pop("_external", None)
+        values.pop("_method", None)
+        anchor = values.pop("_anchor", None)
+        scheme = cast("str | None", values.pop("_scheme", None))
+        for reserved in ("server_name", "scheme"):
+            if reserved in values:
+                message = f"url_for in an email template does not take {reserved!r}: the host is the app's server name"
+                raise TypeError(message)
+
+        url = web_app.build_url(endpoint, scheme=scheme, **values)
+        if anchor is not None:
+            url += "#" + quote(str(anchor))
+        return url
+
+    return url_for

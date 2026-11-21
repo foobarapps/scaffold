@@ -3,6 +3,57 @@
 What changed in each release, and what to do when upgrading. The section of a version
 becomes the notes of its GitHub release when the tag is pushed.
 
+## 0.12.0
+
+Security fixes from an audit of 0.9.19, carried onto 0.11.0. Some change behaviour, see
+"Upgrading".
+
+### Upgrading from 0.11.x
+
+**Email links.** `EmailNotificationService` builds the links in emails with
+`BaseWebApp.build_url`, from the app's `server_name`, and raises without one. Before, a link
+rendered during a request (or in a background task started from one) took its host from the
+request's Host header, so a client could have a password-reset link point at its own server.
+Pass `server_name` to `BaseWebApp`. `url_for` in an email template still takes Quart's
+`_external`, `_scheme` and `_anchor`, but no longer `server_name` or `scheme`.
+
+**SMTP.** `SmtpMailSender` with a user name and password now requires STARTTLS unless
+`use_tls` is set, and fails rather than log in over a plain connection. Pass
+`start_tls=False` for a local relay without TLS, such as a development mail catcher.
+
+**Task queue.** A task row is decoded only into a task type registered on the queue. A row
+naming any other type is dead-lettered instead of being imported, so a subclass that
+overrides `handle_task()` still has to `register()` every type it handles. `handle_tasks()`
+runs at most 10 tasks at a time, and only leases a task when one of them has finished; pass
+`concurrency=None` for no limit as before.
+
+**Errors.** An exception that escapes the handling of a request, for example from an error
+handler that fails itself, is answered with a plain 500 and logged, outside debug and
+testing mode. Before, depending on the Quart version, Quart answered with its debug
+traceback page.
+
+### Added
+
+- `PostgresTaskQueue.handle_tasks(concurrency=)`.
+- `PostgresPubSubService(reconnect_delay=)`: how long the listener waits before listening
+  again after its connection failed.
+
+### Fixed
+
+- A task row could make the worker import any module and call any function in it, with
+  arguments from the row.
+- `csrf_exempt` on one controller method exempted every method of the same name in the
+  module.
+- A controller error handler that ran because the controller could not be created made
+  Quart answer with its debug traceback page, with file paths, source and frame locals.
+- One malformed request (a WebSocket upgrade without a key, or a bad chunked body) stopped
+  the dev server for every client.
+- A pub/sub notification that was valid JSON but not an object stopped the listener for
+  every subscriber, and so did a dropped connection. Subscribing while the last subscriber
+  left could strand the new one without a listener or leak a pooled connection.
+- `handle_tasks()` leased every due task at once, so a burst made the handlers compete for
+  the connection pool and fail on pool timeouts that were charged to their attempts.
+
 ## 0.11.0
 
 Typed versions of the parts of Quart that a strict type checker refuses, so that an app

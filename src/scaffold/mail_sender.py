@@ -41,17 +41,28 @@ class SmtpMailSender(MailSender):
     ) -> None:
         """
         `use_tls` connects over TLS from the start (port 465, usually). `start_tls` upgrades
-        a plain connection with STARTTLS: True requires it, False never does it, and None,
-        the default, upgrades when the server offers it.
+        a plain connection with STARTTLS: True requires it and False never does it. None, the
+        default, requires it when the sender logs in and otherwise upgrades when the server
+        offers it.
         """
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.use_tls = use_tls
+        # With credentials and no implicit TLS, STARTTLS is required by default: aiosmtplib's
+        # opportunistic default would otherwise log in over plaintext whenever the server (or
+        # anyone on the path to it) leaves STARTTLS out of its EHLO reply.
+        if start_tls is None and not use_tls and self._logs_in:
+            start_tls = True
         self.start_tls = start_tls
         # When unset, the Message-ID domain is the local host name.
         self.message_id_domain = message_id_domain
+
+    @property
+    def _logs_in(self) -> bool:
+        # Both or neither: a user name on its own would make aiosmtplib try to log in
+        return bool(self.username and self.password)
 
     @override
     async def send(self, input: Message) -> str:
@@ -65,9 +76,8 @@ class SmtpMailSender(MailSender):
                 recipients=input.recipients,
                 hostname=self.host,
                 port=self.port,
-                # Both or neither: a user name on its own would make aiosmtplib try to log in
-                username=self.username if self.username and self.password else None,
-                password=self.password if self.username and self.password else None,
+                username=self.username if self._logs_in else None,
+                password=self.password if self._logs_in else None,
                 use_tls=self.use_tls,
                 start_tls=self.start_tls,
             )
