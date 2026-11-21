@@ -3,6 +3,14 @@
 What changed in each release, and what to do when upgrading. The section of a version
 becomes the notes of its GitHub release when the tag is pushed.
 
+## Unreleased
+
+### Added
+
+- `PostgresTaskQueue.task_types` and `PostgresTaskQueue.create_handler()` tell which types
+  of tasks have a handler and create one, e.g. for a test of how an app wires its queue.
+  `create_handler()` raises `TaskHandlerNotRegisteredError` for a type that has none.
+
 ## 0.10.0
 
 Fills the gaps an existing app ran into when it moved onto Scaffold: sign-in, translations,

@@ -769,15 +769,16 @@ class MessagesController(BaseController):
 from openai import AsyncOpenAI
 from app.infrastructure.services.chatbot import OpenAIBot
 
+
 def bootstrap() -> Container:
     container = Container()
-    
+
     # ...
-    
+
     container.add_transient(Chatbot, lambda _: OpenAIBot(client=AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])))
-    
+
     # ...
-    
+
     return container
 ```
 
