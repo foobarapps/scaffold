@@ -1,10 +1,11 @@
 import inspect
+import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from functools import wraps
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Any, Concatenate, Protocol, cast, runtime_checkable
+from typing import Any, Concatenate, Final, Protocol, cast, runtime_checkable
 
 from flask.sansio.blueprints import Blueprint as SansioBlueprint  # type: ignore
 from flask.templating import Environment
@@ -13,6 +14,7 @@ from quart import (
     Blueprint,
     Quart,
     Request,
+    Response,
     ResponseReturnValue,
     Websocket,
     abort,
@@ -22,13 +24,13 @@ from quart import (
     websocket,
 )
 from quart.ctx import AppContext, RequestContext
+from quart.testing import QuartClient
 from quart.typing import (
     AfterRequestCallable,
     AfterServingCallable,
     BeforeRequestCallable,
     BeforeServingCallable,
     TemplateContextProcessorCallable,
-    TestClientProtocol,
     WhileServingCallable,
 )
 
@@ -36,6 +38,9 @@ from .assets import Assets
 from .base_controller import BaseController
 
 ONE_YEAR_IN_SECONDS = 31_536_000
+INTERNAL_SERVER_ERROR: Final = ("Internal Server Error", 500)
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -131,6 +136,8 @@ class BaseWebApp:
         if propagate_exceptions:
             self.__app.testing = True
 
+        self.__app.handle_request = self.__contain_request_errors(self.__app.handle_request)  # type: ignore[method-assign, assignment]
+
         self.__controller_factories: dict[
             type[BaseController],
             Callable[[], BaseController],
@@ -181,6 +188,26 @@ class BaseWebApp:
     ) -> None:
         self.__app.context_processor(context_processor_callable)
 
+    def add_template_filter(self, template_filter: Callable[..., object], name: str | None = None) -> None:
+        """Make a function available to templates as a filter, under its own name unless `name` is given."""
+        self.__app.add_template_filter(template_filter, name)
+
+    def add_template_global(self, value: object, name: str | None = None) -> None:
+        """
+        Make a function or a value available to every template.
+
+        A function goes under its own name unless `name` is given. Any other value needs
+        a `name`. Unlike what a context processor returns, a global is also there in
+        macros imported from another template.
+        """
+        if name is None:
+            name = getattr(value, "__name__", None)
+        if name is None:
+            message = "A template global that is not a function needs a name"
+            raise ValueError(message)
+        # Jinja infers the type of its globals from the default ones, which are all callables
+        self.__app.jinja_env.globals[name] = value  # pyright: ignore[reportArgumentType]
+
     @property
     def static_folder(self) -> str | None:
         return self.__app.static_folder
@@ -193,12 +220,14 @@ class BaseWebApp:
     def app_context(self) -> AppContext:
         return self.__app.app_context()
 
-    def test_client(
-        self,
-        *args: Any,  # noqa: ANN401
-        **kwargs: Any,  # noqa: ANN401
-    ) -> TestClientProtocol:
-        return self.__app.test_client(*args, **kwargs)
+    def test_client(self, *, use_cookies: bool = True) -> QuartClient:
+        client = self.__app.test_client(use_cookies=use_cookies)
+        # Only there to narrow the type: an app can't swap the test client class, since
+        # the Quart app is not exposed
+        if not isinstance(client, QuartClient):
+            message = f"Expected Quart's own test client, got {type(client)!r}"
+            raise TypeError(message)
+        return client
 
     def before_serving(self, before_serving_callable: BeforeServingCallable) -> None:
         self.__app.before_serving(before_serving_callable)
@@ -381,20 +410,67 @@ class BaseWebApp:
         R,
     ](
         func: Callable[Concatenate[S, P], R] | Callable[Concatenate[S, P], Awaitable[R]],
+        *,
+        without_controller: R | None = None,
     ) -> Callable[P, R] | Callable[P, Awaitable[R]]:
+        """
+        Bind a controller callback to the controller of the current request.
+
+        `without_controller` is returned instead of calling the callback when the request has
+        no controller. Error handlers need it: the controller is created in a before_request
+        hook, so if its factory raises, the blueprint's error handlers run with no controller,
+        and one that raised again would be called once more for the resulting 500.
+        """
+
+        def controller() -> S | None:
+            if without_controller is None:
+                return cast(S, g.controller)
+            return cast(S | None, g.get("controller"))
+
         if inspect.iscoroutinefunction(func):
 
             @wraps(func)
             async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-                return await func(g.controller, *args, **kwargs)
+                bound = controller()
+                if bound is None:
+                    return cast(R, without_controller)
+                return await func(bound, *args, **kwargs)
 
             return async_wrapper
 
         @wraps(func)
         def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            return cast(R, func(g.controller, *args, **kwargs))
+            bound = controller()
+            if bound is None:
+                return cast(R, without_controller)
+            return cast(R, func(bound, *args, **kwargs))
 
         return sync_wrapper
+
+    def __contain_request_errors(
+        self,
+        handle_request: Callable[[Request], Awaitable[Any]],
+    ) -> Callable[[Request], Awaitable[Any]]:
+        """
+        Answer an exception that escapes request handling with a bare 500.
+
+        Such an exception reaches Quart's ASGI layer, which, depending on the Quart version,
+        answers with its debug traceback page -- file paths, source and frame locals -- even
+        outside debug mode. In debug and testing mode the exception still goes through, so
+        the traceback stays visible where it is wanted.
+        """
+
+        @wraps(handle_request)
+        async def wrapper(request: Request) -> Any:  # noqa: ANN401
+            try:
+                return await handle_request(request)
+            except Exception:
+                if self.__app.debug or self.__app.testing:
+                    raise
+                logger.exception("Unhandled exception on request %s %s", request.method, request.path)
+                return Response(INTERNAL_SERVER_ERROR[0], status=INTERNAL_SERVER_ERROR[1])
+
+        return wrapper
 
     def __register_view_functions(
         self,
@@ -458,7 +534,7 @@ class BaseWebApp:
             if isinstance(callback, ErrorHandlerCallbackFunction):  # pyright: ignore[reportUnnecessaryIsInstance]
                 blueprint.register_error_handler(
                     callback.error_handler_exception,
-                    self.__bind_controller(callback),
+                    self.__bind_controller(callback, without_controller=INTERNAL_SERVER_ERROR),
                 )
 
     @staticmethod

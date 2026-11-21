@@ -430,3 +430,42 @@ async def test_smtp_failure_is_a_delivery_error(
         await mail_sender.send(make_message())
 
     assert excinfo.value.__cause__ is error
+
+
+@pytest.mark.asyncio
+async def test_credentials_require_starttls(smtp: FakeSmtp) -> None:
+    # aiosmtplib only upgrades when the server advertises STARTTLS, then logs in regardless.
+    # With credentials, a server (or anyone on the path) that leaves STARTTLS out must make
+    # the send fail rather than send the password in the clear.
+    mail_sender = SmtpMailSender(host="smtp.example.com", port=587, username="user", password="secret")  # noqa: S106
+
+    await mail_sender.send(make_message())
+
+    assert smtp.sent[0].options["start_tls"] is True
+    assert smtp.sent[0].options["use_tls"] is False
+
+
+@pytest.mark.asyncio
+async def test_implicit_tls_does_not_also_request_starttls(smtp: FakeSmtp) -> None:
+    mail_sender = SmtpMailSender(
+        host="smtp.example.com",
+        port=465,
+        username="user",
+        password="secret",  # noqa: S106
+        use_tls=True,
+    )
+
+    await mail_sender.send(make_message())
+
+    assert smtp.sent[0].options["use_tls"] is True
+    assert smtp.sent[0].options["start_tls"] is None
+
+
+@pytest.mark.asyncio
+async def test_starttls_can_still_be_turned_off_explicitly_with_credentials(smtp: FakeSmtp) -> None:
+    # For a local relay without TLS, e.g. a development mail catcher
+    mail_sender = SmtpMailSender(host="localhost", port=1025, username="user", password="secret", start_tls=False)  # noqa: S106
+
+    await mail_sender.send(make_message())
+
+    assert smtp.sent[0].options["start_tls"] is False

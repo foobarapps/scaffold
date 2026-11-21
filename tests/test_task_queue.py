@@ -4,6 +4,7 @@ import dataclasses
 import datetime
 import inspect
 import os
+import pathlib
 import subprocess
 import sys
 import uuid
@@ -15,6 +16,7 @@ import pytest
 import pytest_asyncio
 from psycopg import AsyncConnection, sql
 from psycopg.rows import TupleRow, dict_row
+from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
 from pydantic_core import PydanticSerializationError
 
@@ -100,6 +102,10 @@ async def eventually(
         if loop.time() >= deadline:
             raise AssertionError(message)
         await asyncio.sleep(0.05)
+
+
+async def ignore(task: ExampleTask) -> None:
+    """A handler for tests that never get as far as running one."""
 
 
 def handler_factory(
@@ -712,6 +718,7 @@ async def test_task_delivered_too_many_times_is_dead_lettered(
     schema_name: str,
 ) -> None:
     queue = await queue_factory(max_deliveries=2)
+    queue.register(ExampleTask, handler_factory(ignore))
     await queue.enqueue(ExampleTask("kills its worker"), visibility_timeout=0)
 
     # Two workers take the task and die before they can report anything
@@ -755,12 +762,46 @@ async def test_task_that_cannot_be_deserialized_is_dead_lettered_and_skipped(
         sql.SQL("SELECT class_name, last_error FROM {failure}").format(failure=table(schema_name, "task_failure")),
     )
     assert [failure["class_name"] for failure in failures] == ["NoSuchTask"]
-    assert "AttributeError" in failures[0]["last_error"]
+    assert "No handler is registered for task type" in failures[0]["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_row_naming_an_unregistered_type_is_never_imported_or_called(
+    queue_factory: QueueFactory,
+    postgres_dsn: str,
+    schema_name: str,
+    tmp_path: pathlib.Path,
+) -> None:
+    # Resolving a row's module and class with importlib would let anyone who can write to
+    # the table make the worker call any function it can import: pydantic validates a
+    # function's arguments by calling it. Only registered task types may be materialised.
+    marker = tmp_path / "created_by_a_task_row"
+    queue = await queue_factory()
+    queue.register(ExampleTask, handler_factory(ignore))
+    await queue.enqueue(ExampleTask("placeholder"))
+    async with await psycopg.AsyncConnection.connect(postgres_dsn) as conn:
+        await conn.execute(
+            sql.SQL("UPDATE {task} SET module_name = 'os', class_name = 'makedirs', data = %s").format(
+                task=table(schema_name),
+            ),
+            (Json({"name": str(marker)}),),
+        )
+
+    assert await queue._get_task() is None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert not marker.exists()
+    failures = await fetch_all(
+        postgres_dsn,
+        sql.SQL("SELECT last_error FROM {failure}").format(failure=table(schema_name, "task_failure")),
+    )
+    assert len(failures) == 1
+    assert "No handler is registered for task type os.makedirs" in failures[0]["last_error"]
 
 
 @pytest.mark.asyncio
 async def test_stale_delivery_cannot_acknowledge_or_renew_after_redelivery(queue_factory: QueueFactory) -> None:
     queue = await queue_factory()
+    queue.register(ExampleTask, handler_factory(ignore))
     await queue.enqueue(ExampleTask("contended"), visibility_timeout=0)
 
     first = await queue._get_task()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -928,6 +969,48 @@ async def test_handler_past_the_maximum_run_time_is_cancelled_and_the_task_fails
     recorded = await failures()
     assert recorded[0]["attempts"] == 2
     assert "TaskRunTimeExceededError" in recorded[0]["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_handle_tasks_never_runs_more_tasks_at_once_than_its_concurrency(queue_factory: QueueFactory) -> None:
+    # Unbounded, a burst of due tasks was leased all at once and every handler competed for
+    # the same connection pool, failing on pool timeouts that were charged to its attempts.
+    concurrency = 3
+    task_count = 12
+    running = 0
+    peak = 0
+    handled: list[str] = []
+
+    async def handle(task: ExampleTask) -> None:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.1)
+        running -= 1
+        handled.append(task.payload)
+
+    queue = await queue_factory()
+    queue.register(ExampleTask, handler_factory(handle))
+    for index in range(task_count):
+        await queue.enqueue(ExampleTask(f"task-{index}"), visibility_timeout=600)
+
+    worker = asyncio.create_task(queue.handle_tasks(concurrency=concurrency))
+    try:
+        await eventually(lambda: len(handled) == task_count, message=f"only {len(handled)} tasks were handled")
+    finally:
+        worker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker
+
+    assert peak == concurrency
+
+
+@pytest.mark.asyncio
+async def test_handle_tasks_rejects_a_concurrency_below_one(queue_factory: QueueFactory) -> None:
+    queue = await queue_factory()
+
+    with pytest.raises(ValueError, match="concurrency"):
+        await queue.handle_tasks(concurrency=0)
 
 
 @pytest.mark.asyncio
