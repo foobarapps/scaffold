@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 from quart import request
-from quart.typing import TestClientProtocol
+from quart.testing import QuartClient
 
 from scaffold.web import BaseWebApp
 from scaffold.web.login import (
@@ -85,7 +85,7 @@ def make_app(*, login_view: str | None = "sign_in", skip_assets: bool = False) -
     return app
 
 
-async def text(client: TestClientProtocol, path: str) -> str:
+async def text(client: QuartClient, path: str) -> str:
     return await (await client.get(path)).get_data(as_text=True)
 
 

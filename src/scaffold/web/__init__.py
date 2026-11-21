@@ -24,6 +24,8 @@ from .decorators import (
     template_context_processor,
     while_serving,
 )
+from .request_data import request_files, request_form, request_form_and_files, request_values
+from .responses import app_config, make_response, send_file, send_from_directory
 
 __all__ = [
     "BaseController",
@@ -33,6 +35,7 @@ __all__ = [
     "after_request",
     "after_serving",
     "after_websocket",
+    "app_config",
     "before_request",
     "before_serving",
     "before_websocket",
@@ -42,8 +45,15 @@ __all__ = [
     "generate_csrf_input",
     "generate_csrf_token",
     "login_required",
+    "make_response",
     "register_csrf",
+    "request_files",
+    "request_form",
+    "request_form_and_files",
+    "request_values",
     "route",
+    "send_file",
+    "send_from_directory",
     "stream_with_context",
     "template_context_processor",
     "validate_csrf_token",

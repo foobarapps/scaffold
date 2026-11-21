@@ -5,10 +5,10 @@ becomes the notes of its GitHub release when the tag is pushed.
 
 ## Unreleased
 
-Security fixes from an audit of 0.9.19, carried onto 0.10.0. Some change behaviour, see
+Security fixes from an audit of 0.9.19, carried onto 0.11.0. Some change behaviour, see
 "Upgrading".
 
-### Upgrading from 0.10.0
+### Upgrading from 0.11.0
 
 **Email links.** `EmailNotificationService` builds the links in emails with
 `BaseWebApp.build_url`, from the app's `server_name`, and raises without one. Before, a link
@@ -53,6 +53,38 @@ traceback page.
   left could strand the new one without a listener or leak a pooled connection.
 - `handle_tasks()` leased every due task at once, so a burst made the handlers compete for
   the connection pool and fail on pool timeouts that were charged to their attempts.
+
+## 0.11.0
+
+Typed versions of the parts of Quart that a strict type checker refuses, so that an app
+does not need ignore comments, casts or helpers of its own around them.
+
+### Upgrading from 0.10.x
+
+**Test client.** `BaseWebApp.test_client()` returns Quart's `QuartClient` instead of the
+`TestClientProtocol`, and its only parameter is `use_cookies`, by keyword.
+
+- Change annotations of `TestClientProtocol` to `quart.testing.QuartClient`.
+- Change `app.test_client(False)` to `app.test_client(use_cookies=False)`.
+- Drop any other arguments. Quart passed them on to the test client class, and Quart's
+  own client takes none, so they only worked with a custom class, which an app on
+  Scaffold cannot set.
+
+### Added
+
+- `scaffold.web`: `request_form()`, `request_files()`, `request_values()` and
+  `request_form_and_files()` return the data of the current request with the types of its
+  keys and values, which Quart leaves out.
+- `scaffold.web`: `send_file()` and `send_from_directory()` with Quart's full signatures.
+- `scaffold.web`: `make_response()` returns Quart's own response, so that `make_conditional`
+  can be awaited without a check. Unlike Quart's, it raises a `TypeError` when it is given
+  a Werkzeug response, which Quart hands back as it is. Keep `quart.make_response` for those.
+- `scaffold.web`: `app_config()` reads the config of the current app as a typed mapping.
+- `BaseWebApp.add_template_filter()` and `BaseWebApp.add_template_global()` register Jinja
+  filters and globals, with the arguments of Quart's own. A global can be any value, not
+  only a function; one that is not a function needs a name.
+- `scaffold.web.testing.session_transaction()` opens the session of a test client, for a
+  path and headers if given.
 
 ## 0.10.0
 

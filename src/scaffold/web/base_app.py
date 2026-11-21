@@ -24,13 +24,13 @@ from quart import (
     websocket,
 )
 from quart.ctx import AppContext, RequestContext
+from quart.testing import QuartClient
 from quart.typing import (
     AfterRequestCallable,
     AfterServingCallable,
     BeforeRequestCallable,
     BeforeServingCallable,
     TemplateContextProcessorCallable,
-    TestClientProtocol,
     WhileServingCallable,
 )
 
@@ -188,6 +188,26 @@ class BaseWebApp:
     ) -> None:
         self.__app.context_processor(context_processor_callable)
 
+    def add_template_filter(self, template_filter: Callable[..., object], name: str | None = None) -> None:
+        """Make a function available to templates as a filter, under its own name unless `name` is given."""
+        self.__app.add_template_filter(template_filter, name)
+
+    def add_template_global(self, value: object, name: str | None = None) -> None:
+        """
+        Make a function or a value available to every template.
+
+        A function goes under its own name unless `name` is given. Any other value needs
+        a `name`. Unlike what a context processor returns, a global is also there in
+        macros imported from another template.
+        """
+        if name is None:
+            name = getattr(value, "__name__", None)
+        if name is None:
+            message = "A template global that is not a function needs a name"
+            raise ValueError(message)
+        # Jinja infers the type of its globals from the default ones, which are all callables
+        self.__app.jinja_env.globals[name] = value  # pyright: ignore[reportArgumentType]
+
     @property
     def static_folder(self) -> str | None:
         return self.__app.static_folder
@@ -200,12 +220,14 @@ class BaseWebApp:
     def app_context(self) -> AppContext:
         return self.__app.app_context()
 
-    def test_client(
-        self,
-        *args: Any,  # noqa: ANN401
-        **kwargs: Any,  # noqa: ANN401
-    ) -> TestClientProtocol:
-        return self.__app.test_client(*args, **kwargs)
+    def test_client(self, *, use_cookies: bool = True) -> QuartClient:
+        client = self.__app.test_client(use_cookies=use_cookies)
+        # Only there to narrow the type: an app can't swap the test client class, since
+        # the Quart app is not exposed
+        if not isinstance(client, QuartClient):
+            message = f"Expected Quart's own test client, got {type(client)!r}"
+            raise TypeError(message)
+        return client
 
     def before_serving(self, before_serving_callable: BeforeServingCallable) -> None:
         self.__app.before_serving(before_serving_callable)
