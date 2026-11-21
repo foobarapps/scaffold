@@ -22,13 +22,13 @@ from quart import (
     websocket,
 )
 from quart.ctx import AppContext, RequestContext
+from quart.testing import QuartClient
 from quart.typing import (
     AfterRequestCallable,
     AfterServingCallable,
     BeforeRequestCallable,
     BeforeServingCallable,
     TemplateContextProcessorCallable,
-    TestClientProtocol,
     WhileServingCallable,
 )
 
@@ -181,6 +181,20 @@ class BaseWebApp:
     ) -> None:
         self.__app.context_processor(context_processor_callable)
 
+    def add_template_filter(self, name: str, template_filter: Callable[..., object]) -> None:
+        """Make a function available to templates as the filter `name`."""
+        self.__app.add_template_filter(template_filter, name)
+
+    def add_template_global(self, name: str, value: object) -> None:
+        """
+        Make a value or a function available to every template as `name`.
+
+        Unlike what a context processor returns, a global is also there in macros
+        imported from another template.
+        """
+        # Jinja infers the type of its globals from the default ones, which are all callables
+        self.__app.jinja_env.globals[name] = value  # pyright: ignore[reportArgumentType]
+
     @property
     def static_folder(self) -> str | None:
         return self.__app.static_folder
@@ -193,12 +207,12 @@ class BaseWebApp:
     def app_context(self) -> AppContext:
         return self.__app.app_context()
 
-    def test_client(
-        self,
-        *args: Any,  # noqa: ANN401
-        **kwargs: Any,  # noqa: ANN401
-    ) -> TestClientProtocol:
-        return self.__app.test_client(*args, **kwargs)
+    def test_client(self, *, use_cookies: bool = True) -> QuartClient:
+        client = self.__app.test_client(use_cookies=use_cookies)
+        if not isinstance(client, QuartClient):
+            message = f"Expected Quart's own test client, got {type(client)!r}"
+            raise TypeError(message)
+        return client
 
     def before_serving(self, before_serving_callable: BeforeServingCallable) -> None:
         self.__app.before_serving(before_serving_callable)
