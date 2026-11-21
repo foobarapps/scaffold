@@ -1094,3 +1094,19 @@ async def test_handle_task_called_directly_still_works_without_a_delivery(queue_
     assert handled == ["direct"]
     assert started[0].delivery is None
     assert await queue._get_task() is None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_registered_task_types_and_handlers_can_be_inspected() -> None:
+    # The pool is never opened: registering handlers needs no database
+    pool = make_pool("postgresql://localhost/unused")
+    queue = PostgresTaskQueue[ExampleTask](pool)
+
+    class Handler:
+        async def handle_task(self, task: ExampleTask) -> None:
+            pass
+
+    queue.register(ExampleTask, Handler)
+
+    assert queue.task_types == {ExampleTask}
+    assert isinstance(queue.create_handler(ExampleTask), Handler)

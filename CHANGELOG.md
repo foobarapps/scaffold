@@ -3,6 +3,32 @@
 What changed in each release, and what to do when upgrading. The section of a version
 becomes the notes of its GitHub release when the tag is pushed.
 
+## 0.11.0
+
+Typed versions of the parts of Quart that a strict type checker refuses, so that an app
+does not need ignore comments, casts or helpers of its own around them.
+
+### Upgrading from 0.10.x
+
+**Test client.** `BaseWebApp.test_client()` returns Quart's `QuartClient` instead of the
+`TestClientProtocol`, and takes only `use_cookies`, by keyword. Change annotations of
+`TestClientProtocol` to `quart.testing.QuartClient`.
+
+### Added
+
+- `scaffold.web`: `request_form()`, `request_files()`, `request_values()` and
+  `request_form_and_files()` return the data of the current request with the types of its
+  keys and values, which Quart leaves out.
+- `scaffold.web`: `send_file()` and `send_from_directory()` with full signatures, and
+  `make_response()` that returns Quart's own response, so that `make_conditional` can be
+  awaited without a check.
+- `scaffold.web`: `app_config()` reads the config of the current app as a typed mapping.
+- `BaseWebApp.add_template_filter()` and `BaseWebApp.add_template_global()` register Jinja
+  filters and globals. A global can be any value, not only a function.
+- `scaffold.web.testing.session_transaction()` opens the session of a test client.
+- `PostgresTaskQueue.task_types` and `PostgresTaskQueue.create_handler()` tell which types
+  of tasks have a handler and create one, e.g. for a test of how an app wires its queue.
+
 ## 0.10.0
 
 Fills the gaps an existing app ran into when it moved onto Scaffold: sign-in, translations,
